@@ -14,15 +14,16 @@ def build_simple_exe():
     """构建简化的EXE"""
     print("开始构建EXE...")
     
-    # 创建英文路径的临时目录
-    temp_dir = Path("C:/temp_bili_build")
+    # 🎯 优化：直接在项目目录创建构建目录，无需拷贝到C盘
+    current_dir = Path(__file__).parent.parent  # 项目根目录
+    temp_dir = current_dir / "build_temp"
     if temp_dir.exists():
         shutil.rmtree(temp_dir)
     temp_dir.mkdir()
     
     try:
         # 复制必要文件
-        current_dir = Path(__file__).parent
+        current_dir = Path(__file__).parent.parent  # 修正：上一级目录才是项目根目录
         
         # 完整复制core目录（确保所有文件都复制）
         print("复制core目录...")
@@ -298,16 +299,19 @@ def build_license_exe():
     """构建许可证生成器EXE"""
     print("\n开始构建许可证生成器EXE...")
     
-    temp_dir = Path("C:/temp_license_build")
+    # 🎯 优化：在项目目录创建许可证构建目录
+    current_dir = Path(__file__).parent.parent  # 项目根目录  
+    temp_dir = current_dir / "build_temp_license"
     if temp_dir.exists():
         shutil.rmtree(temp_dir)
     temp_dir.mkdir()
     
     try:
-        current_dir = Path(__file__).parent
+        current_dir = Path(__file__).parent.parent  # 修正：许可证生成器也需要正确的项目根目录
         
-        # 复制许可证生成器文件（使用现有的license_gui.py）
-        shutil.copy2(current_dir / "license_gui.py", temp_dir / "main.py")
+        # 复制许可证生成器文件（使用tools目录下的license_gui.py）
+        tools_dir = Path(__file__).parent  # tools目录路径
+        shutil.copy2(tools_dir / "license_gui.py", temp_dir / "main.py")
         
         # 创建独立的core目录，只包含许可证相关文件
         core_dir = temp_dir / "core"
@@ -327,6 +331,8 @@ def build_license_exe():
             if src_file.exists():
                 shutil.copy2(src_file, core_dir)
                 print(f"复制核心文件: {file_name}")
+            else:
+                print(f"⚠️ 核心文件不存在，跳过: {file_name}")
         
         # 创建许可证生成器专用的__init__.py（不导入app模块）
         license_init_content = '''#!/usr/bin/env python3

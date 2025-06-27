@@ -1,9 +1,36 @@
-selenium>=4.0.0
-webdriver-manager==4.0.1
+# B站视频助手 - 项目依赖
+# 核心依赖 - 必须安装
+
+# GUI框架
 PyQt5>=5.15.0
-cryptography==41.0.7
-fake-useragent==1.4.0
+
+# 浏览器自动化
+selenium>=4.0.0
+webdriver-manager>=4.0.1
+
+# 网络请求
 requests>=2.25.0
-opencv-python
+fake-useragent>=1.4.0
+
+# 加密和安全
+cryptography>=41.0.0
+
+# 系统监控和性能
 psutil>=5.8.0
-py-cpuinfo 
+
+# 可选依赖 - 建议安装但不强制
+
+# CPU信息获取（用于硬件指纹）
+py-cpuinfo
+
+# 图像处理（如果需要视频封面处理）
+# Pillow>=8.0.0
+
+# 开发和调试工具（可选）
+# pytest>=6.0.0
+# flake8>=4.0.0
+
+# 注意：
+# 1. opencv-python 已移除（项目中未实际使用）
+# 2. 加密功能已简化，cryptography用于许可证系统
+# 3. PyInstaller 用于构建EXE，开发时需要单独安装：pip install pyinstaller 

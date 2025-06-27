@@ -4,6 +4,10 @@ B站视频带货助手_完整EXE版.rar
 ms-playwright
 videos
 
+# 构建临时目录
+build_temp/
+build_temp_license/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
