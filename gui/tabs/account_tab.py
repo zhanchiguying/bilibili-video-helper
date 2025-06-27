@@ -11,8 +11,8 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt
 
-from core.ui_config import UIConfig
-from core.ui_styles import UIStyles
+from core.config import UIConfig
+from gui.ui_styles import UIStyles
 
 
 class AccountTab:
@@ -147,7 +147,7 @@ class AccountTab:
         settings_row2 = QHBoxLayout()
         settings_row2.setSpacing(10)
         
-        # 等待时间设置
+        # 投稿成功等待时间设置
         settings_row2.addWidget(QLabel("投稿成功等待:"))
         self.main_window.success_wait_time_spinbox = QSpinBox()
         self.main_window.success_wait_time_spinbox.setRange(0, 999)

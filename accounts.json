@@ -208,10 +208,7 @@
     "status": "active",
     "last_login": 1750838268,
     "notes": "",
-    "devtools_port": 9301,
-    "today_published": 0,
-    "last_publish_date": "2025-06-27",
-    "total_published": 0
+    "devtools_port": 9301
   },
   "2": {
     "cookies": [
@@ -428,10 +425,7 @@
     "status": "active",
     "last_login": 1750814620,
     "notes": "",
-    "devtools_port": 9301,
-    "today_published": 0,
-    "last_publish_date": "2025-06-27",
-    "total_published": 0
+    "devtools_port": 9301
   },
   "测试1": {
     "cookies": [
@@ -646,12 +640,9 @@
       "webgl_renderer": "ANGLE (Intel, Intel(R) HD Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)"
     },
     "status": "active",
-    "last_login": 1750905445,
+    "last_login": 1751012009,
     "notes": "",
-    "devtools_port": 9313,
-    "today_published": 0,
-    "last_publish_date": "2025-06-27",
-    "total_published": 0
+    "devtools_port": 9313
   },
   "测试2": {
     "cookies": [
@@ -868,10 +859,7 @@
     "status": "active",
     "last_login": 1750814620,
     "notes": "",
-    "devtools_port": 9301,
-    "today_published": 0,
-    "last_publish_date": "2025-06-27",
-    "total_published": 0
+    "devtools_port": 9301
   },
   "测试3": {
     "cookies": [
@@ -1088,10 +1076,7 @@
     "status": "active",
     "last_login": 1750814882,
     "notes": "",
-    "devtools_port": 9301,
-    "today_published": 0,
-    "last_publish_date": "2025-06-27",
-    "total_published": 0
+    "devtools_port": 9301
   },
   "测试4": {
     "cookies": [
@@ -1308,10 +1293,7 @@
     "status": "active",
     "last_login": 1750814888,
     "notes": "",
-    "devtools_port": 9302,
-    "today_published": 0,
-    "last_publish_date": "2025-06-27",
-    "total_published": 0
+    "devtools_port": 9302
   },
   "测试5": {
     "cookies": [
@@ -1528,230 +1510,7 @@
     "status": "active",
     "last_login": 1750814894,
     "notes": "",
-    "devtools_port": 9303,
-    "today_published": 0,
-    "last_publish_date": "2025-06-27",
-    "total_published": 0
-  },
-  "测试6": {
-    "cookies": [
-      {
-        "domain": ".bilibili.com",
-        "expiry": 1750829670,
-        "httpOnly": false,
-        "name": "bili_ticket_expires",
-        "path": "/",
-        "sameSite": "Lax",
-        "secure": false,
-        "value": "1750829608"
-      },
-      {
-        "domain": ".bilibili.com",
-        "expiry": 1750829670,
-        "httpOnly": false,
-        "name": "bili_ticket",
-        "path": "/",
-        "sameSite": "Lax",
-        "secure": false,
-        "value": "eyJhbGciOiJIUzI1NiIsImtpZCI6InMwMyIsInR5cCI6IkpXVCJ9.eyJleHAiOjE3NTA4Mjk2NjgsImlhdCI6MTc1MDU3MDQwOCwicGx0IjotMX0.vPh5mNccPGgqtyffAN-oXIcxXZnb6kvAyYOQMgl0DYk"
-      },
-      {
-        "domain": "www.bilibili.com",
-        "httpOnly": false,
-        "name": "bmg_src_def_domain",
-        "path": "/",
-        "sameSite": "Lax",
-        "secure": false,
-        "value": "i0.hdslb.com"
-      },
-      {
-        "domain": "www.bilibili.com",
-        "httpOnly": false,
-        "name": "bmg_af_switch",
-        "path": "/",
-        "sameSite": "Lax",
-        "secure": false,
-        "value": "1"
-      },
-      {
-        "domain": ".bilibili.com",
-        "expiry": 1782106470,
-        "httpOnly": false,
-        "name": "home_feed_column",
-        "path": "/",
-        "sameSite": "Lax",
-        "secure": false,
-        "value": "5"
-      },
-      {
-        "domain": ".bilibili.com",
-        "expiry": 1782106470,
-        "httpOnly": false,
-        "name": "enable_feed_channel",
-        "path": "/",
-        "sameSite": "Lax",
-        "secure": false,
-        "value": "ENABLE"
-      },
-      {
-        "domain": ".bilibili.com",
-        "expiry": 1782106470,
-        "httpOnly": false,
-        "name": "enable_web_push",
-        "path": "/",
-        "sameSite": "Lax",
-        "secure": false,
-        "value": "DISABLE"
-      },
-      {
-        "domain": ".bilibili.com",
-        "expiry": 1785130468,
-        "httpOnly": false,
-        "name": "buvid_fp",
-        "path": "/",
-        "sameSite": "Lax",
-        "secure": false,
-        "value": "36756d17f999dfb6b10866955d90eb4f"
-      },
-      {
-        "domain": ".bilibili.com",
-        "expiry": 1782106470,
-        "httpOnly": false,
-        "name": "header_theme_version",
-        "path": "/",
-        "sameSite": "Lax",
-        "secure": false,
-        "value": "CLOSE"
-      },
-      {
-        "domain": ".bilibili.com",
-        "expiry": 1766122468,
-        "httpOnly": true,
-        "name": "SESSDATA",
-        "path": "/",
-        "sameSite": "Lax",
-        "secure": true,
-        "value": "13c0b2df%2C1766122466%2C6bca9%2A61CjCM9-yIYCiGmR43uln9V9MuW_45suTYIj9d0NHmvm2ydPemaK7hAoc8x_oNdZHDoyASVlZ2a0Zra21tM2lUdklDMnl1Q1IteDhuX0c2clNGLThNZXZLVVA5a0lOZ3hHMWF4OGFCM0tQNFpYOEp3NUxLLTVVUGctb2Q4MUhPd21wSXllSGhHR2FnIIEC"
-      },
-      {
-        "domain": ".bilibili.com",
-        "httpOnly": false,
-        "name": "b_lsid",
-        "path": "/",
-        "sameSite": "Lax",
-        "secure": false,
-        "value": "107E6102F6_197962185DC"
-      },
-      {
-        "domain": ".bilibili.com",
-        "expiry": 1782106470,
-        "httpOnly": false,
-        "name": "browser_resolution",
-        "path": "/",
-        "sameSite": "Lax",
-        "secure": false,
-        "value": "1427-755"
-      },
-      {
-        "domain": ".bilibili.com",
-        "expiry": 1766122468,
-        "httpOnly": false,
-        "name": "sid",
-        "path": "/",
-        "sameSite": "Lax",
-        "secure": false,
-        "value": "8pfygh2l"
-      },
-      {
-        "domain": ".bilibili.com",
-        "expiry": 1785130436,
-        "httpOnly": false,
-        "name": "buvid3",
-        "path": "/",
-        "sameSite": "Lax",
-        "secure": false,
-        "value": "2BA6AA68-5CC7-43E0-6BE7-96EBD35404C834060infoc"
-      },
-      {
-        "domain": ".bilibili.com",
-        "expiry": 1766122468,
-        "httpOnly": false,
-        "name": "DedeUserID__ckMd5",
-        "path": "/",
-        "sameSite": "Lax",
-        "secure": false,
-        "value": "672172c0077dc420"
-      },
-      {
-        "domain": ".bilibili.com",
-        "expiry": 1766122468,
-        "httpOnly": false,
-        "name": "DedeUserID",
-        "path": "/",
-        "sameSite": "Lax",
-        "secure": false,
-        "value": "3546896532507016"
-      },
-      {
-        "domain": ".bilibili.com",
-        "expiry": 1766122468,
-        "httpOnly": false,
-        "name": "bili_jct",
-        "path": "/",
-        "sameSite": "Lax",
-        "secure": false,
-        "value": "0be4e52a1599a482e8d6b0e6528143bc"
-      },
-      {
-        "domain": ".bilibili.com",
-        "expiry": 1785130437,
-        "httpOnly": false,
-        "name": "buvid4",
-        "path": "/",
-        "sameSite": "Lax",
-        "secure": false,
-        "value": "DB033D18-E596-5B49-7FC8-67E4E912874134457-025062213-k64L9RUC3HPvCn8CP01KjQ%3D%3D"
-      },
-      {
-        "domain": ".bilibili.com",
-        "expiry": 1782106468,
-        "httpOnly": false,
-        "name": "_uuid",
-        "path": "/",
-        "sameSite": "Lax",
-        "secure": false,
-        "value": "58A734108-CF45-F292-617A-B10845C79565F68849infoc"
-      },
-      {
-        "domain": ".bilibili.com",
-        "expiry": 1782106436,
-        "httpOnly": false,
-        "name": "b_nut",
-        "path": "/",
-        "sameSite": "Lax",
-        "secure": false,
-        "value": "1750570434"
-      }
-    ],
-    "fingerprint": {
-      "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-      "window_size": "1440,900",
-      "language": "zh-CN,zh;q=0.9,en;q=0.8",
-      "timezone": "Asia/Shanghai",
-      "viewport": "1440,900",
-      "screen_resolution": "1536x864",
-      "color_depth": 24,
-      "platform": "Win32",
-      "webgl_vendor": "Google Inc. (Intel)",
-      "webgl_renderer": "ANGLE (Intel, Intel(R) HD Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)"
-    },
-    "status": "active",
-    "last_login": 1750814900,
-    "notes": "",
-    "devtools_port": 9304,
-    "today_published": 0,
-    "last_publish_date": "2025-06-27",
-    "total_published": 0
+    "devtools_port": 9303
   },
   "16603798970": {
     "cookies": [
@@ -1966,11 +1725,8 @@
       "webgl_renderer": "ANGLE (Intel, Intel(R) HD Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)"
     },
     "status": "active",
-    "last_login": 1750998034,
+    "last_login": 1751002899,
     "notes": "",
-    "devtools_port": 9319,
-    "today_published": 0,
-    "last_publish_date": "2025-06-27",
-    "total_published": 0
+    "devtools_port": 9318
   }
 }

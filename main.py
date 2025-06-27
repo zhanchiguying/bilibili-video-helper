@@ -14,8 +14,17 @@ from PyQt5.QtCore import Qt
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 try:
-    from core import BilibiliUploaderApp, Config, get_logger
-    from gui import MainWindow
+    from core.app import BilibiliUploaderApp
+    from core.config import Config  
+    from core.logger import get_logger
+    
+    # 🎯 使用importlib直接导入gui.py文件，避免与gui模块冲突
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("gui_main", "gui.py")
+    gui_main = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gui_main)
+    MainWindow = gui_main.MainWindow
+    
 except ImportError as e:
     print(f"导入模块失败: {e}")
     sys.exit(1)

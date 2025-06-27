@@ -245,14 +245,14 @@ class UIStyles:
                 font-weight: bold;
                 border: 1px solid {cls.COLORS['border']};
                 border-radius: 4px;
-                margin-top: 1ex;
-                padding-top: 10px;
+                margin-top: 12px;
+                padding-top: 18px;
                 background-color: {cls.COLORS['white']};
             }}
             QGroupBox::title {{
                 subcontrol-origin: margin;
                 left: 10px;
-                padding: 0 5px 0 5px;
+                padding: 0 8px 0 8px;
                 color: {cls.COLORS['dark']};
             }}
         """
@@ -374,4 +374,16 @@ class UIStyles:
     @classmethod
     def clear_cache(cls):
         """清除样式缓存"""
-        cls._STYLE_CACHE.clear() 
+        cls._STYLE_CACHE.clear()
+        
+    @classmethod
+    def reload_styles(cls):
+        """重新加载所有样式"""
+        cls.clear_cache()
+        # 强制重新生成样式缓存
+        cls.group_box_style()
+        cls.button_style()
+        cls.table_style()
+        cls.input_style()
+        cls.progress_style()
+        cls.tab_style() 

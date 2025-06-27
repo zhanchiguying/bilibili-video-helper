@@ -57,9 +57,9 @@
     }
   ],
   "ui_settings": {
-    "concurrent_browsers": "1",
-    "videos_per_account": "1",
-    "video_directory": "D:/写的程序/B站视频上传/videos",
+    "concurrent_browsers": "2",
+    "videos_per_account": "4",
+    "video_directory": "D:/写的程序/bilibili-video-helper/videos",
     "account_selections": {
       "1": false,
       "2": false,

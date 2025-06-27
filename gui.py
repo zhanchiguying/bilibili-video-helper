@@ -26,12 +26,14 @@ from PyQt5.QtGui import QFont, QColor, QTextCursor, QIcon, QPixmap
 
 # 应用模块
 from core.app import BilibiliUploaderApp as BilibiliApp
-from core.config import Config
-from core.ui_styles import UIStyles
-from core.ui_config import UIConfig
+from core.config import Config, UIConfig
+from gui.ui_styles import UIStyles
 from core.bilibili_video_uploader import BilibiliVideoUploader
 from core.license_system import LicenseSystem
-from core.button_utils import prevent_double_click, protect_button_click
+from gui.utils.button_utils import prevent_double_click, protect_button_click
+
+# 在导入部分添加 Services 模块的导入
+from services.account_service import AccountService
 
 class LoginThread(QThread):
     """登录线程"""
@@ -59,6 +61,7 @@ class BrowserUploadThread(QThread):
     upload_progress = pyqtSignal(int)
     upload_status = pyqtSignal(str)
     upload_finished = pyqtSignal(bool, str)
+    account_progress_updated = pyqtSignal(str)  # 🎯 新增：账号进度更新信号
     
     def __init__(self, core_app, account_name, video_filename, video_directory, upload_settings):
         super().__init__()
@@ -219,6 +222,9 @@ class BrowserUploadThread(QThread):
             self.upload_progress.emit(100)
             self.upload_finished.emit(True, f"视频上传成功! 商品: {product_info.get('goodsName', '未知商品')}")
             
+            # 🎯 修复：发布成功后发出账号进度更新信号（在上传结果发送之后）
+            self.account_progress_updated.emit(self.account_name)
+            
         except Exception as e:
             self.upload_finished.emit(False, f"上传过程异常: {str(e)}")
     
@@ -307,9 +313,10 @@ class BatchUploadThread(QThread):
         """标记视频已上传"""
         md5_hash = self.get_file_md5(file_path)
         if md5_hash:
+            from datetime import datetime
             self.uploaded_videos_md5[md5_hash] = {
                 "filename": os.path.basename(file_path),
-                "upload_time": int(time.time()),
+                "upload_date": datetime.now().strftime("%Y-%m-%d"),
                 "account": account,
                 "product_id": product_id,
                 "deleted": False
@@ -351,16 +358,6 @@ class BatchUploadThread(QThread):
             
             self.upload_status.emit("🚀 开始批量上传流程...")
             
-            # 🎯 第一步：全局浏览器初始化
-            self.upload_status.emit("🔍 进行全局浏览器初始化...")
-            initialization_success = self._perform_global_browser_initialization()
-            
-            if not initialization_success:
-                self.upload_finished.emit(False, "全局浏览器初始化失败，无法继续批量上传")
-                return
-            
-            self.upload_status.emit("✅ 全局浏览器初始化完成，开始账号浏览器创建...")
-            
             # 获取所有未上传的视频文件
             available_videos = []
             for video_file in self.video_files:
@@ -390,14 +387,16 @@ class BatchUploadThread(QThread):
             deleted_videos = 0
             
             # 🎯 新增：预检查账号完成状态，过滤掉已完成的账号
-            from core.account_manager import account_manager
+            # from core.account_manager import account_manager  # 删除这行
             valid_accounts = []
             completed_accounts = []
             
             self.upload_status.emit("🔍 检查账号完成状态...")
             for account in self.selected_accounts:
                 try:
-                    status, completed, published = account_manager.get_account_progress(account, self.videos_per_account)
+                    # 🎯 简化：直接使用account_service
+                    status, completed, published = self.account_service.get_account_progress(account, self.videos_per_account)
+                        
                     if completed:
                         completed_accounts.append(account)
                         self.upload_status.emit(f"⏭️ [{account}] 已完成目标 ({status})，跳过")
@@ -432,7 +431,8 @@ class BatchUploadThread(QThread):
                 try:
                     # 🎯 新增：处理前再次检查账号完成状态
                     try:
-                        status, completed, published = account_manager.get_account_progress(account, self.videos_per_account)
+                        status, completed, published = self.account_service.get_account_progress(account, self.videos_per_account)
+                            
                         if completed:
                             self.upload_status.emit(f"⏭️ [{account}] 处理前检查发现已完成目标 ({status})，跳过")
                             return
@@ -472,7 +472,8 @@ class BatchUploadThread(QThread):
                         
                         # 🎯 新增：每个视频处理前检查账号是否已达目标
                         try:
-                            status, completed, published = account_manager.get_account_progress(account, self.videos_per_account)
+                            status, completed, published = self.account_service.get_account_progress(account, self.videos_per_account)
+                                
                             if completed:
                                 self.upload_status.emit(f"⏭️ [{account}] 视频处理前检查发现已完成目标 ({status})，停止处理")
                                 break
@@ -524,6 +525,8 @@ class BatchUploadThread(QThread):
                             successful_uploads += 1
                             uploaded_count += 1
                             self.mark_video_uploaded(video_path, account, product_id)
+                            # 🎯 修复：在JSON文件更新后立即发送界面刷新信号
+                            self.account_progress_updated.emit(account)
                             # 删除视频文件并更新计数器
                             if self.delete_video_file(video_path):
                                 deleted_videos += 1
@@ -531,8 +534,8 @@ class BatchUploadThread(QThread):
                             
                             # 🎯 新增：检查账号是否已完成当日目标
                             try:
-                                from core.account_manager import account_manager
-                                status, completed, published = account_manager.get_account_progress(account, self.videos_per_account)
+                                status, completed, published = self.account_service.get_account_progress(account, self.videos_per_account)
+                                    
                                 if completed:
                                     self.upload_status.emit(f"🎉 [{account}] 已完成当日目标 ({published}/{self.videos_per_account})，停止继续上传")
                                     break  # 跳出视频循环，该账号完成任务
@@ -700,8 +703,8 @@ class BatchUploadThread(QThread):
             if not uploader.publish_video(browser, account_name):
                 return False
             
-            # 🎯 新增：投稿成功后发出账号进度更新信号
-            self.account_progress_updated.emit(account_name)
+            # 🎯 移除：改为在主循环的mark_video_uploaded之后发送信号，确保时序正确
+            # self.account_progress_updated.emit(account_name)
                 
             return True
             
@@ -829,75 +832,6 @@ class BatchUploadThread(QThread):
             self.upload_status.emit(f"⚠️ [{account_name}] 恢复cookie失败: {e}")
             return False
 
-    def _perform_global_browser_initialization(self):
-        """执行全局浏览器初始化 - 先弹出空白浏览器检测环境，然后关闭"""
-        initialization_browser = None
-        try:
-            self.upload_status.emit("🔧 启动初始化浏览器...")
-            
-            # 🎯 创建初始化浏览器（不指定起始URL，会是data:,空白页）
-            initialization_browser = self.core_app.browser_manager.create_driver(
-                fingerprint=None,
-                headless=False,
-                account_name="__global_init__",  # 特殊的初始化标识
-                start_url=None  # 不指定URL，保持data:,空白页
-            )
-            
-            if not initialization_browser:
-                self.upload_status.emit("❌ 初始化浏览器创建失败")
-                return False
-            
-            self.upload_status.emit("✅ 初始化浏览器已启动 (data:, 空白页)")
-            
-            # 🎯 进行基本功能测试
-            self.upload_status.emit("🧪 测试浏览器基本功能...")
-            
-            try:
-                # 测试基本功能
-                current_url = initialization_browser.current_url
-                page_title = initialization_browser.title
-                
-                # 测试导航功能
-                initialization_browser.get("https://www.bilibili.com")
-                time.sleep(3)
-                
-                # 验证导航成功
-                final_url = initialization_browser.current_url
-                if "bilibili.com" in final_url:
-                    self.upload_status.emit("✅ 浏览器导航功能正常")
-                else:
-                    self.upload_status.emit(f"⚠️ 浏览器导航异常，URL: {final_url}")
-                
-                # 测试JavaScript执行
-                js_result = initialization_browser.execute_script("return 'JS_OK';")
-                if js_result == "JS_OK":
-                    self.upload_status.emit("✅ JavaScript执行功能正常")
-                else:
-                    self.upload_status.emit("⚠️ JavaScript执行功能异常")
-                
-            except Exception as test_error:
-                self.upload_status.emit(f"⚠️ 浏览器功能测试失败: {test_error}")
-                # 继续流程，不因为测试失败而中断
-            
-            # 🎯 等待用户观察（可选）
-            self.upload_status.emit("⏳ 初始化完成，准备关闭初始化浏览器...")
-            time.sleep(2)  # 短暂等待让用户看到初始化过程
-            
-            return True
-            
-        except Exception as e:
-            self.upload_status.emit(f"❌ 全局浏览器初始化失败: {e}")
-            return False
-            
-        finally:
-            # 🎯 关键：确保初始化浏览器被正确关闭
-            if initialization_browser:
-                try:
-                    self.upload_status.emit("🔒 关闭初始化浏览器...")
-                    self.core_app.browser_manager.close_driver(initialization_browser, "__global_init__")
-                    self.upload_status.emit("✅ 初始化浏览器已关闭")
-                except Exception as close_error:
-                    self.upload_status.emit(f"⚠️ 关闭初始化浏览器失败: {close_error}")
 
     def check_login_status(self, browser, account_obj=None):
         """检查登录状态 - 优化版本，支持恢复cookies"""
@@ -1176,6 +1110,151 @@ class MainWindow(QMainWindow):
 
         self.log_message(f"{Config.APP_NAME} v{Config.APP_VERSION} 启动完成")
     
+    def _initialize_services(self):
+        """初始化服务层"""
+        try:
+            self.log_message("🔧 开始初始化服务层...", "INFO")
+            
+            # 🚀 初始化性能优化组件
+            self._initialize_performance_components()
+            
+            from services import (
+                AccountService, UploadService, LicenseService, 
+                FileService, SettingsService
+            )
+            
+            # 初始化各个服务，每个都有独立的错误处理
+            self._init_account_service(AccountService)
+            self._init_upload_service(UploadService)
+            self._init_license_service(LicenseService)
+            self._init_file_service(FileService)
+            self._init_settings_service(SettingsService)
+            
+            self.log_message("🔧 服务层初始化完成", "SUCCESS")
+            
+        except Exception as e:
+            self.log_message(f"❌ 服务层初始化失败: {e}", "ERROR")
+            # 提供后备的空服务，防止AttributeError
+            self._create_fallback_services()
+    
+    def _init_account_service(self, AccountService):
+        """初始化账号服务"""
+        try:
+            self.account_service = AccountService(self)
+            if self.account_service.initialize():
+                self.log_message("✅ AccountService 初始化成功", "INFO")
+            else:
+                self.log_message("❌ AccountService 初始化失败", "ERROR")
+        except Exception as e:
+            self.log_message(f"❌ AccountService 初始化错误: {e}", "ERROR")
+            self.account_service = None
+    
+    def _init_upload_service(self, UploadService):
+        """初始化上传服务"""
+        try:
+            self.upload_service = UploadService(self)
+            if self.upload_service.initialize():
+                self.log_message("✅ UploadService 初始化成功", "INFO")
+            else:
+                self.log_message("❌ UploadService 初始化失败", "ERROR")
+        except Exception as e:
+            self.log_message(f"❌ UploadService 初始化错误: {e}", "ERROR")
+            self.upload_service = None
+    
+    def _init_license_service(self, LicenseService):
+        """初始化许可证服务"""
+        try:
+            self.license_service = LicenseService(self)
+            if self.license_service.initialize():
+                self.log_message("✅ LicenseService 初始化成功", "INFO")
+            else:
+                self.log_message("❌ LicenseService 初始化失败", "ERROR")
+        except Exception as e:
+            self.log_message(f"❌ LicenseService 初始化错误: {e}", "ERROR")
+            self.license_service = None
+    
+    def _init_file_service(self, FileService):
+        """初始化文件服务"""
+        try:
+            self.file_service = FileService(self)
+            if self.file_service.initialize():
+                self.log_message("✅ FileService 初始化成功", "INFO")
+            else:
+                self.log_message("❌ FileService 初始化失败", "ERROR")
+        except Exception as e:
+            self.log_message(f"❌ FileService 初始化错误: {e}", "ERROR")
+            self.file_service = None
+    
+    def _init_settings_service(self, SettingsService):
+        """初始化设置服务"""
+        try:
+            self.settings_service = SettingsService(self)
+            if self.settings_service.initialize():
+                self.log_message("✅ SettingsService 初始化成功", "INFO")
+            else:
+                self.log_message("❌ SettingsService 初始化失败", "ERROR")
+        except Exception as e:
+            self.log_message(f"❌ SettingsService 初始化错误: {e}", "ERROR")
+            self.settings_service = None
+    
+    def _create_fallback_services(self):
+        """创建后备服务，防止AttributeError"""
+        class FallbackService:
+            def __getattr__(self, name):
+                def fallback_method(*args, **kwargs):
+                    print(f"⚠️ 服务未初始化，调用 {name} 被忽略")
+                    return False
+                return fallback_method
+        
+        if not hasattr(self, 'account_service') or self.account_service is None:
+            self.account_service = FallbackService()
+        if not hasattr(self, 'upload_service') or self.upload_service is None:
+            self.upload_service = FallbackService()
+        if not hasattr(self, 'license_service') or self.license_service is None:
+            self.license_service = FallbackService()
+        if not hasattr(self, 'file_service') or self.file_service is None:
+            self.file_service = FallbackService()
+        if not hasattr(self, 'settings_service') or self.settings_service is None:
+            self.settings_service = FallbackService()
+    
+    def _initialize_performance_components(self):
+        """初始化性能优化组件"""
+        try:
+            from performance import CacheManager, TaskQueue, MemoryManager, ResourcePool
+            
+            # 初始化缓存管理器
+            self.cache_manager = CacheManager(max_size=500, default_ttl=600)
+            self.log_message("✅ CacheManager 初始化成功", "INFO")
+            
+            # 初始化任务队列
+            self.task_queue = TaskQueue(max_workers=3)
+            self.log_message("✅ TaskQueue 初始化成功", "INFO")
+            
+            # 初始化内存管理器
+            self.memory_manager = MemoryManager(gc_threshold=200.0, auto_gc_interval=600)
+            self.log_message("✅ MemoryManager 初始化成功", "INFO")
+            
+            # 添加内存警告回调
+            def memory_warning_callback(message):
+                self.log_message(f"⚠️ 内存警告: {message}", "WARNING")
+            
+            if hasattr(self.memory_manager, 'add_warning_callback'):
+                self.memory_manager.add_warning_callback(memory_warning_callback)
+            
+            self.log_message("🚀 性能优化组件初始化完成", "SUCCESS")
+            
+        except ImportError as e:
+            self.log_message(f"⚠️ 性能组件不可用: {e}", "WARNING")
+            # 创建后备的空组件
+            self.cache_manager = None
+            self.task_queue = None
+            self.memory_manager = None
+        except Exception as e:
+            self.log_message(f"❌ 性能组件初始化失败: {e}", "ERROR")
+            self.cache_manager = None
+            self.task_queue = None
+            self.memory_manager = None
+    
     def set_window_icon(self):
         """设置窗口图标"""
         try:
@@ -1252,7 +1331,7 @@ class MainWindow(QMainWindow):
             self.log_message(f"⚠️ 浏览器状态监控启动失败: {e}", "WARNING")
     
     def update_browser_status_async(self):
-        """🎯 增强版：真实检测浏览器状态，准确反映关闭状态 - 性能优化版"""
+        """🎯 增强版：使用异步任务队列优化浏览器状态检测"""
         try:
             # 获取当前账号列表
             accounts = []
@@ -1264,10 +1343,67 @@ class MainWindow(QMainWindow):
             if not accounts:
                 return
             
-            # 🎯 性能优化：限制每次检查的账号数量，避免一次性检查太多造成卡顿
-            max_check_count = min(3, len(accounts))  # 每次最多检查3个账号
+            # 🚀 使用异步任务队列处理耗时的浏览器状态检测
+            if hasattr(self, 'task_queue') and self.task_queue:
+                # 性能优化：限制每次检查的账号数量
+                max_check_count = min(3, len(accounts))
+                
+                # 轮询检查：使用计数器确保所有账号都能被检查到
+                if not hasattr(self, '_browser_check_counter'):
+                    self._browser_check_counter = 0
+                
+                start_index = self._browser_check_counter % len(accounts)
+                accounts_to_check = []
+                
+                for i in range(max_check_count):
+                    index = (start_index + i) % len(accounts)
+                    accounts_to_check.append(accounts[index])
+                
+                # 更新计数器
+                self._browser_check_counter = (self._browser_check_counter + max_check_count) % len(accounts)
+                
+                # 🚀 提交异步任务检测浏览器状态
+                for username in accounts_to_check:
+                    def check_browser_task(user):
+                        try:
+                            return user, self.is_browser_active(user)
+                        except:
+                            return user, False
+                    
+                    def on_check_complete(result):
+                        if result:
+                            username, is_active = result
+                            self.on_browser_status_checked(username, is_active)
+                    
+                    from performance.task_queue import TaskPriority
+                    self.task_queue.submit(
+                        check_browser_task, username,
+                        priority=TaskPriority.LOW,
+                        callback=on_check_complete,
+                        name=f"browser_check_{username}"
+                    )
+            else:
+                # 后备方案：同步处理
+                self._update_browser_status_sync()
             
-            # 轮询检查：使用计数器确保所有账号都能被检查到
+        except Exception as e:
+            # 静默处理错误
+            pass
+    
+    def _update_browser_status_sync(self):
+        """同步版本的浏览器状态更新（后备方案）"""
+        try:
+            accounts = []
+            for row in range(self.account_table.rowCount()):
+                username_item = self.account_table.item(row, 1)
+                if username_item:
+                    accounts.append(username_item.text())
+            
+            if not accounts:
+                return
+            
+            max_check_count = min(3, len(accounts))
+            
             if not hasattr(self, '_browser_check_counter'):
                 self._browser_check_counter = 0
             
@@ -1278,10 +1414,8 @@ class MainWindow(QMainWindow):
                 index = (start_index + i) % len(accounts)
                 accounts_to_check.append(accounts[index])
             
-            # 更新计数器
             self._browser_check_counter = (self._browser_check_counter + max_check_count) % len(accounts)
             
-            # 🎯 检测选中的账号
             for username in accounts_to_check:
                 try:
                     is_active = self.is_browser_active(username)
@@ -1290,7 +1424,6 @@ class MainWindow(QMainWindow):
                     self.on_browser_status_checked(username, False)
             
         except Exception as e:
-            # 静默处理错误
             pass
     
     def on_browser_status_checked(self, username: str, is_active: bool):
@@ -1340,6 +1473,9 @@ class MainWindow(QMainWindow):
 
     def load_data(self):
         """🎯 简化版数据加载 - 减少线程和定时器使用"""
+        # 🆕 首先初始化服务层
+        self._initialize_services()
+        
         self.load_ui_settings()  # 🎯 修复：先加载设置，包括账号选择状态
         self.refresh_accounts()  # 然后刷新账号，应用加载的选择状态
         self.refresh_video_list()  # 然后刷新视频列表
@@ -1391,11 +1527,10 @@ class MainWindow(QMainWindow):
     
     @prevent_double_click(duration=3.0, disable_text="添加中...")
     def add_account(self):
-        """添加账号"""
+        """添加账号 - 使用服务层"""
         username, ok = QInputDialog.getText(self, "添加账号", "请输入账号名:")
         if ok and username:
-            if self.core_app.account_manager.add_account(username):
-                self.log_message(f"账号 {username} 添加成功", "SUCCESS")
+            if self.account_service.add_account(username):
                 # 🚀 失效账号缓存，确保界面更新
                 if hasattr(self, '_invalidate_account_cache'):
                     self._invalidate_account_cache()
@@ -1403,12 +1538,10 @@ class MainWindow(QMainWindow):
                 from PyQt5.QtCore import QTimer
                 QTimer.singleShot(100, self.refresh_accounts)
                 QTimer.singleShot(500, self.refresh_accounts)  # 双重保险确保刷新
-            else:
-                self.log_message(f"账号 {username} 添加失败", "ERROR")
     
     @prevent_double_click(duration=5.0, disable_text="登录中...")
     def login_account(self):
-        """登录账号"""
+        """登录账号 - 使用服务层"""
         selected_rows = self.account_table.selectionModel().selectedRows()
         if not selected_rows:
             QMessageBox.information(self, "提示", "请选择要登录的账号")
@@ -1417,13 +1550,8 @@ class MainWindow(QMainWindow):
         row = selected_rows[0].row()
         username = self.account_table.item(row, 1).text()
         
-        # 创建登录线程
-        self.login_thread = LoginThread(self.core_app.account_manager, username)
-        self.login_thread.login_success.connect(self.on_login_success)
-        self.login_thread.login_failed.connect(self.on_login_failed)
-        self.login_thread.start()
-        
-        self.log_message(f"开始登录账号: {username}")
+        # 使用服务层启动登录
+        self.account_service.start_login(username)
     
     def on_login_success(self, username):
         """登录成功处理"""
@@ -1436,7 +1564,7 @@ class MainWindow(QMainWindow):
         self.refresh_accounts()
     
     def remove_account(self):
-        """删除账号"""
+        """删除账号 - 使用服务层"""
         selected_rows = self.account_table.selectionModel().selectedRows()
         if not selected_rows:
             QMessageBox.information(self, "提示", "请选择要删除的账号")
@@ -1447,15 +1575,14 @@ class MainWindow(QMainWindow):
         
         reply = QMessageBox.question(self, "确认删除", f"确定要删除账号 {username} 吗？")
         if reply == QMessageBox.Yes:
-            self.core_app.account_manager.remove_account(username)
-            self.log_message(f"账号 {username} 已删除", "SUCCESS")
-            # 🚀 失效账号缓存，确保界面更新
-            if hasattr(self, '_invalidate_account_cache'):
-                self._invalidate_account_cache()
-            # 🚀 强制延迟刷新，确保界面立即更新
-            from PyQt5.QtCore import QTimer
-            QTimer.singleShot(100, self.refresh_accounts)
-            QTimer.singleShot(500, self.refresh_accounts)  # 双重保险确保刷新
+            if self.account_service.remove_account(username):
+                # 🚀 失效账号缓存，确保界面更新
+                if hasattr(self, '_invalidate_account_cache'):
+                    self._invalidate_account_cache()
+                # 🚀 强制延迟刷新，确保界面立即更新
+                from PyQt5.QtCore import QTimer
+                QTimer.singleShot(100, self.refresh_accounts)
+                QTimer.singleShot(500, self.refresh_accounts)  # 双重保险确保刷新
     
 
     @prevent_double_click(duration=5.0, disable_text="诊断中...")
@@ -1879,8 +2006,11 @@ class MainWindow(QMainWindow):
                             target_count = 1
                     
                     # 🎯 简化进度获取，减少文件I/O
-                    from core.account_manager import account_manager
-                    status, completed, published = account_manager.get_account_progress(username, target_count)
+                    # from core.account_manager import account_manager
+                    if hasattr(self, 'account_service') and self.account_service:
+                        status, completed, published = self.account_service.get_account_progress(username, target_count)
+                    else:
+                        status, completed, published = f"0/{target_count}", False, 0
                     
                     # 今日已发列
                     today_published_item = QTableWidgetItem(str(published))
@@ -1982,7 +2112,7 @@ class MainWindow(QMainWindow):
             self.refresh_video_list()
     
     def refresh_video_list(self):
-        """🎯 临时禁用线程版本 - 直接在主线程处理，防止崩溃"""
+        """🚀 优化版视频列表刷新 - 支持缓存和异步处理"""
         if not hasattr(self, 'video_list'):
             return
             
@@ -1992,8 +2122,19 @@ class MainWindow(QMainWindow):
                 self.video_stats_label.setText("📊 文件统计: 请选择有效目录")
             return
         
-        # 🎯 直接在主线程处理，避免线程问题
         try:
+            # 🚀 尝试使用缓存
+            cache_key = f"video_scan_{directory}_{int(os.path.getmtime(directory))}"
+            cached_result = None
+            
+            if hasattr(self, 'cache_manager') and self.cache_manager:
+                cached_result = self.cache_manager.get(cache_key)
+                if cached_result:
+                    self.log_message("✅ 使用缓存的视频列表", "INFO")
+                    self._apply_cached_video_list(cached_result)
+                    return
+            
+            # 显示加载状态
             if hasattr(self, 'video_stats_label'):
                 self.video_stats_label.setText("📊 正在扫描文件...")
             
@@ -2005,6 +2146,8 @@ class MainWindow(QMainWindow):
             self.video_list.clear()
             
             total_size = 0
+            display_items = []
+            
             for file_path in video_files:
                 filename = os.path.basename(file_path)
                 try:
@@ -2015,12 +2158,24 @@ class MainWindow(QMainWindow):
                 except:
                     display_text = filename
                     
+                display_items.append((display_text, file_path))
+                
                 item = QListWidgetItem(display_text)
                 item.setData(Qt.UserRole, file_path)
                 self.video_list.addItem(item)
             
             # 重新启用信号
             self.video_list.blockSignals(False)
+            
+            # 🚀 缓存结果（5分钟有效期）
+            if hasattr(self, 'cache_manager') and self.cache_manager:
+                cache_data = {
+                    'directory': directory,
+                    'display_items': display_items,
+                    'total_size': total_size,
+                    'file_count': len(video_files)
+                }
+                self.cache_manager.set(cache_key, cache_data, ttl=300)
             
             # 更新统计信息
             if hasattr(self, 'video_stats_label'):
@@ -2032,6 +2187,33 @@ class MainWindow(QMainWindow):
             if hasattr(self, 'video_stats_label'):
                 self.video_stats_label.setText("📊 文件扫描失败")
             self.log_message(f"❌ 视频文件扫描失败: {e}", "ERROR")
+    
+    def _apply_cached_video_list(self, cache_data):
+        """应用缓存的视频列表数据"""
+        try:
+            # 暂时断开信号
+            self.video_list.blockSignals(True)
+            self.video_list.clear()
+            
+            # 添加缓存的条目
+            for display_text, file_path in cache_data['display_items']:
+                item = QListWidgetItem(display_text)
+                item.setData(Qt.UserRole, file_path)
+                self.video_list.addItem(item)
+            
+            # 重新启用信号
+            self.video_list.blockSignals(False)
+            
+            # 更新统计信息
+            if hasattr(self, 'video_stats_label'):
+                total_size_mb = cache_data['total_size'] / (1024 * 1024) if cache_data['total_size'] > 0 else 0
+                stats_text = f"📊 文件统计: {cache_data['file_count']} 个文件, 总大小 {total_size_mb:.1f}MB (缓存)"
+                self.video_stats_label.setText(stats_text)
+                
+        except Exception as e:
+            self.log_message(f"❌ 应用缓存视频列表失败: {e}", "ERROR")
+            # fallback到正常扫描
+            self.refresh_video_list()
     
     def _refresh_video_list_async(self, directory):
         """刷新视频文件列表 - 修复版：同步处理避免线程问题"""
@@ -2407,6 +2589,7 @@ class MainWindow(QMainWindow):
         self.upload_thread.upload_progress.connect(self.on_upload_progress)
         self.upload_thread.upload_status.connect(self.on_upload_status)
         self.upload_thread.upload_finished.connect(self.on_upload_finished)
+        self.upload_thread.account_progress_updated.connect(self.on_account_progress_updated)  # 🎯 新增：连接进度更新信号
         self.upload_thread.start()
     
     def pause_browser_upload(self):
@@ -2901,6 +3084,8 @@ class MainWindow(QMainWindow):
                 concurrent_browsers,
                 videos_per_account
             )
+            # 🎯 修复：直接传递account_service给线程
+            self.batch_upload_thread.account_service = self.account_service
             self.batch_upload_thread.upload_progress.connect(self.on_batch_upload_progress)
             self.batch_upload_thread.upload_status.connect(self.on_batch_upload_status)
             self.batch_upload_thread.upload_finished.connect(self.on_batch_upload_finished)
@@ -3074,17 +3259,19 @@ class MainWindow(QMainWindow):
     
     @prevent_double_click(duration=3.0, disable_text="验证中...")
     def verify_license(self):
-        """验证许可证"""
+        """验证许可证 - 使用服务层"""
         try:
             license_text = self.license_input.toPlainText().strip()
             if not license_text:
                 QMessageBox.warning(self, "输入错误", "请先输入许可证内容")
                 return
             
-            result = self.license_system.verify_license(license_text)
+            # 使用服务层验证许可证
+            is_valid, message = self.license_service.verify_license(license_text)
             
-            if result['valid']:
-                # 更新许可证信息和授权状态
+            if is_valid:
+                # 更新许可证信息和授权状态（保持原有逻辑）
+                result = self.license_system.verify_license(license_text)
                 self.license_info = result
                 self.is_licensed = True
                 
@@ -3106,16 +3293,9 @@ class MainWindow(QMainWindow):
                     f"剩余天数: {result['remaining_days']} 天\n\n"
                     "现在您可以使用所有功能，包括多账号批量上传。")
                 
-                self.log_message("许可证验证成功，程序已激活", "SUCCESS")
-                
             else:
-                self.license_log_message(f"❌ 许可证验证失败: {result['error']}")
-                if 'current_hardware' in result:
-                    self.license_log_message(f"   当前硬件指纹: {result['current_hardware']}")
-                    self.license_log_message(f"   许可证硬件指纹: {result['license_hardware']}")
-                
-                QMessageBox.critical(self, "验证失败", f"许可证验证失败:\n\n{result['error']}")
-                self.log_message(f"许可证验证失败: {result['error']}", "ERROR")
+                self.license_log_message(f"❌ 许可证验证失败: {message}")
+                QMessageBox.critical(self, "验证失败", f"许可证验证失败:\n\n{message}")
                 
         except Exception as e:
             error_msg = f"验证许可证时发生错误: {str(e)}"
@@ -3628,7 +3808,7 @@ class MainWindow(QMainWindow):
                 except:
                     target_count = 1
             
-            from core.account_manager import account_manager
+            # from core.account_manager import account_manager
             
             # 查找对应的表格行并更新进度
             for row in range(self.account_table.rowCount()):
@@ -3636,8 +3816,11 @@ class MainWindow(QMainWindow):
                 if username_item and username_item.text() == account_name:
                     try:
                         # 获取最新进度
-                        status, completed, published = account_manager.get_account_progress(account_name, target_count)
-                        
+                        if hasattr(self, 'account_service') and self.account_service:
+                            status, completed, published = self.account_service.get_account_progress(account_name, target_count)
+                        else:
+                            status, completed, published = f"0/{target_count}", False, 0
+
                         # 更新今日已发列（第5列）
                         today_published_item = self.account_table.item(row, 5)
                         if today_published_item:
@@ -3702,7 +3885,7 @@ class MainWindow(QMainWindow):
             if not hasattr(self, 'account_table') or not self.account_table:
                 return
             
-            from core.account_manager import account_manager
+            # from core.account_manager import account_manager
             
             # 遍历表格中的所有账号并更新进度
             updated_count = 0
@@ -3713,8 +3896,11 @@ class MainWindow(QMainWindow):
                     
                     try:
                         # 🎯 使用新的目标数量重新计算进度
-                        status, completed, published = account_manager.get_account_progress(username, new_target)
-                        
+                        if hasattr(self, 'account_service') and self.account_service:
+                            status, completed, published = self.account_service.get_account_progress(username, new_target)
+                        else:
+                            status, completed, published = f"0/{new_target}", False, 0
+
                         # 更新今日已发列（第5列） - 这个数量不变
                         today_published_item = self.account_table.item(row, 5)
                         if today_published_item:
@@ -3766,7 +3952,7 @@ class MainWindow(QMainWindow):
             if not hasattr(self, 'account_stats_label') or not hasattr(self, 'account_table'):
                 return
             
-            from core.account_manager import account_manager
+            # from core.account_manager import account_manager
             
             total_accounts = 0
             active_accounts = 0
@@ -3788,7 +3974,11 @@ class MainWindow(QMainWindow):
                     
                     # 统计完成状态
                     try:
-                        status, completed, published = account_manager.get_account_progress(username, target_count)
+                        if hasattr(self, 'account_service') and self.account_service:
+                            status, completed, published = self.account_service.get_account_progress(username, target_count)
+                        else:
+                            status, completed, published = f"0/{target_count}", False, 0
+                            
                         if completed:
                             completed_accounts += 1
                         elif published > 0:

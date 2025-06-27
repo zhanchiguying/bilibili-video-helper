@@ -27,6 +27,111 @@
       "account": "测试2",
       "product_id": "100028204727",
       "deleted": true
+    },
+    "94cc6f1f9b33398a74d0caab83bd09f7": {
+      "filename": "65944106150----高端行李箱 谁能不爱.mp4",
+      "upload_time": 1751001835,
+      "account": "测试2",
+      "product_id": "65944106150",
+      "deleted": true
+    },
+    "94e503b60bc8a618a0538c1f2abb9a18": {
+      "filename": "68021081082----鬼塚虎春夏男女帆布鞋.mp4",
+      "upload_time": 1751003031,
+      "account": "测试1",
+      "product_id": "68021081082",
+      "deleted": true
+    },
+    "2a646e92c94459a9718146cfa72a9ba0": {
+      "filename": "100023869485----快乐玛丽 女士夏季渔夫鞋.mp4",
+      "upload_date": "2025-01-27",
+      "account": "测试1",
+      "product_id": "100023869485",
+      "deleted": true
+    },
+    "0aa1b66c28231cc635e35833d061554d": {
+      "filename": "100037151954----Jeep 男士镂空休闲鞋.mp4",
+      "upload_date": "2025-06-27",
+      "account": "测试1",
+      "product_id": "100037151954",
+      "deleted": true
+    },
+    "2283bfbe6519f2ad70ae9b9862d43a1b": {
+      "filename": "100043352662----斯凯奇 女士夏季泡泡鞋.mp4",
+      "upload_date": "2025-06-27",
+      "account": "测试3",
+      "product_id": "100043352662",
+      "deleted": true
+    },
+    "843b18374f134ffa67ce19650140d92f": {
+      "filename": "100046074606----斯凯奇 女士包头泡泡鞋.mp4",
+      "upload_date": "2025-06-27",
+      "account": "测试4",
+      "product_id": "100046074606",
+      "deleted": true
+    },
+    "fd2fff3b3b5fbc43c2e3f0c9b5c85720": {
+      "filename": "100055828391----公牛世家 男士夏季休闲鞋.mp4",
+      "upload_date": "2025-06-27",
+      "account": "测试3",
+      "product_id": "100055828391",
+      "deleted": true
+    },
+    "a26d65b9ec5cf04e914b1882d086575b": {
+      "filename": "100094707907----海澜之家 男士夏季休闲鞋.mp4",
+      "upload_date": "2025-06-27",
+      "account": "测试4",
+      "product_id": "100094707907",
+      "deleted": true
+    },
+    "bfb20cab2ac288976c5c7d0891a5b0e9": {
+      "filename": "100166656111----JEEP 儿童夏季溯溪鞋.mp4",
+      "upload_date": "2025-06-27",
+      "account": "测试2",
+      "product_id": "100166656111",
+      "deleted": true
+    },
+    "8376682a7cdf585ec940de4169156223": {
+      "filename": "100168306305----华为儿童手表 5 Pro.mp4",
+      "upload_date": "2025-06-27",
+      "account": "测试1",
+      "product_id": "100168306305",
+      "deleted": true
+    },
+    "910e97986346e216e67680c6d1986680": {
+      "filename": "100215639918----公牛世 男士夏季休闲鞋.mp4",
+      "upload_date": "2025-06-27",
+      "account": "测试2",
+      "product_id": "100215639918",
+      "deleted": true
+    },
+    "93ee891cb61560480c656eb813d2ffc6": {
+      "filename": "10101241045781----朗姿女装，尽显女性优雅魅力！.mp4",
+      "upload_date": "2025-06-27",
+      "account": "测试4",
+      "product_id": "10101241045781",
+      "deleted": true
+    },
+    "3a389f6b2c644e3138ff4d9e8a358bb7": {
+      "filename": "10100022952794----泰兰尼斯 宝宝夏凉鞋.mp4",
+      "upload_date": "2025-06-27",
+      "account": "测试3",
+      "product_id": "10100022952794",
+      "deleted": true
+    },
+    "feff6cf02e83f1deb740a1650ddb3d20": {
+      "filename": "10132469041431----途明大容量双肩包，时尚又实用！.mp4",
+      "upload_date": "2025-06-27",
+      "account": "测试1",
+      "product_id": "10132469041431",
+      "deleted": true
+    },
+    "efc8fc8e983304fc58b0097e3c53e251": {
+      "filename": "10133223497845----朗姿连衣裙，简约时尚干练！.mp4",
+      "upload_date": "2025-06-27",
+      "account": "测试2",
+      "product_id": "10133223497845",
+      "deleted": true
     }
   },
   "description": "记录已上传视频的MD5值，防止重复上传导致封号",

@@ -11,7 +11,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtGui import QFont
 
-from core.ui_config import UIConfig
+from core.config import UIConfig
 
 
 class LogTab:
