@@ -94,7 +94,18 @@ class BusinessLogicManager:
         if not account:
             return False, "账号不存在", None
         
-        if account.status != 'active':
+        # 兼容dict和Account对象格式
+        if hasattr(account, '_data'):
+            # TempAccount包装对象
+            account_status = account.status
+        elif isinstance(account, dict):
+            # 原始dict格式
+            account_status = account.get('status', 'inactive')
+        else:
+            # Account对象格式
+            account_status = account.status
+        
+        if account_status != 'active':
             return False, "账号未激活，请先登录", None
         
         return True, "账号验证通过", account

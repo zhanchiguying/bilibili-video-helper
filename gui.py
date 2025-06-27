@@ -87,7 +87,22 @@ class BrowserUploadThread(QThread):
             self.upload_progress.emit(10)
             
             account = self.core_app.account_manager.get_account(self.account_name)
-            if not account or account.status != 'active':
+            if not account:
+                self.upload_finished.emit(False, "账号不存在")
+                return
+            
+            # 兼容dict和Account对象格式
+            if hasattr(account, '_data'):
+                # TempAccount包装对象
+                account_status = account.status
+            elif isinstance(account, dict):
+                # 原始dict格式
+                account_status = account.get('status', 'inactive')
+            else:
+                # Account对象格式
+                account_status = account.status
+            
+            if account_status != 'active':
                 self.upload_finished.emit(False, "账号未激活，请先登录")
                 return
                 
@@ -1157,6 +1172,8 @@ class MainWindow(QMainWindow):
         
         self.load_data()
 
+        # 原有的性能优化补丁已清理，性能问题应通过重构解决
+
         self.log_message(f"{Config.APP_NAME} v{Config.APP_VERSION} 启动完成")
     
     def set_window_icon(self):
@@ -1188,504 +1205,32 @@ class MainWindow(QMainWindow):
             self.log_message(f"⚠️ 设置图标时出错: {e}", "WARNING")
     
     def create_account_tab(self):
-        """创建账号管理标签页"""
-        widget = QWidget()
-        layout = QVBoxLayout()
-        layout.setSpacing(8)  # 🎯 减少整体间距
-        layout.setContentsMargins(8, 8, 8, 8)  # 🎯 减少边距
+        """创建账号管理标签页 - 使用模块化组件"""
+        from gui.tabs.account_tab import AccountTab
         
-        # === 账号操作控制面板 ===
-        control_frame = QFrame()
-        control_frame.setFrameStyle(QFrame.StyledPanel)
-        control_frame.setStyleSheet(UIStyles.get_frame_style())
-        control_layout = QHBoxLayout()
-        
-        # 账号操作区
-        account_group = QGroupBox("👤 账号操作")
-        account_layout = QHBoxLayout()
-        account_layout.setSpacing(10)  # 🎯 设置统一间距
-        account_layout.setContentsMargins(10, 10, 10, 10)  # 🎯 减少内边距
-        
-        add_account_btn = QPushButton(UIConfig.UI_TEXT['add_account'])
-        add_account_btn.setStyleSheet(UIStyles.get_button_style('success'))
-        add_account_btn.clicked.connect(self.add_account)
-        
-        login_account_btn = QPushButton(UIConfig.UI_TEXT['login_account'])
-        login_account_btn.setStyleSheet(UIStyles.get_button_style('primary'))
-        login_account_btn.clicked.connect(self.login_account)
-        
-        remove_account_btn = QPushButton(UIConfig.UI_TEXT['remove_account'])
-        remove_account_btn.setStyleSheet(UIStyles.get_button_style('danger'))
-        remove_account_btn.clicked.connect(self.remove_account)
-        
-        # 浏览器诊断按钮
-        diagnose_browser_btn = QPushButton("🔍 浏览器诊断")
-        diagnose_browser_btn.setStyleSheet(UIStyles.get_button_style('warning'))
-        diagnose_browser_btn.clicked.connect(self.diagnose_browser)
-        
-        account_layout.addWidget(add_account_btn)
-        account_layout.addWidget(login_account_btn)
-        account_layout.addWidget(remove_account_btn)
-        account_layout.addWidget(diagnose_browser_btn)
-        account_group.setLayout(account_layout)
-        
-        # 批量上传控制区
-        batch_group = QGroupBox("🚀 批量上传控制")
-        batch_layout = QVBoxLayout()
-        batch_layout.setSpacing(8)  # 🎯 减少行间距，让布局更紧凑
-        batch_layout.setContentsMargins(10, 10, 10, 10)  # 🎯 减少内边距
-        
-        # 设置行
-        settings_row = QHBoxLayout()
-        settings_row.setSpacing(10)  # 🎯 设置元素间距
-        
-        # 同时多开浏览器数量
-        settings_row.addWidget(QLabel("同时打开浏览器数量:"))
-        self.concurrent_browsers_input = QLineEdit("2")
-        self.concurrent_browsers_input.setMaximumWidth(80)
-        self.concurrent_browsers_input.setPlaceholderText("数量")
-        self.concurrent_browsers_input.textChanged.connect(self.save_ui_settings)
-        settings_row.addWidget(self.concurrent_browsers_input)
-        
-        settings_row.addWidget(QLabel("每个账号上传视频数量:"))
-        self.videos_per_account_input = QLineEdit("1")
-        self.videos_per_account_input.setMaximumWidth(80)
-        self.videos_per_account_input.setPlaceholderText("数量")
-        self.videos_per_account_input.textChanged.connect(self.save_ui_settings)
-        # 🎯 新增：数量改变时实时更新账号进度显示
-        self.videos_per_account_input.textChanged.connect(self.on_videos_per_account_changed)
-        settings_row.addWidget(self.videos_per_account_input)
-        
-        settings_row.addStretch()
-        batch_layout.addLayout(settings_row)
-        
-        # 🎯 新增：第二行 - 等待时间设置 + 操作按钮
-        settings_row2 = QHBoxLayout()
-        settings_row2.setSpacing(10)  # 🎯 设置元素间距
-        
-        # 等待时间设置
-        settings_row2.addWidget(QLabel("投稿成功等待:"))
-        self.success_wait_time_spinbox = QSpinBox()
-        self.success_wait_time_spinbox.setRange(0, 999)  # 0-999秒，支持3位数
-        self.success_wait_time_spinbox.setSuffix(" 秒")
-        self.success_wait_time_spinbox.setValue(2)  # 默认2秒
-        self.success_wait_time_spinbox.setMaximumWidth(100)  # 增加宽度以支持3位数
-        self.success_wait_time_spinbox.setStyleSheet("font-size: 12px;")
-        self.success_wait_time_spinbox.setToolTip("检测到投稿成功标识后的等待时间，用于确保页面状态稳定（0-999秒）")
-        self.success_wait_time_spinbox.valueChanged.connect(self.on_success_wait_time_changed)
-        settings_row2.addWidget(self.success_wait_time_spinbox)
-        
-        # 🎯 添加弹性间距，让按钮右对齐与上面的按钮位置保持一致
-        settings_row2.addStretch()
-        
-        # 操作按钮
-        self.start_batch_upload_btn = QPushButton("🚀 一键开始")
-        self.start_batch_upload_btn.setStyleSheet(UIStyles.get_button_style('success'))
-        self.start_batch_upload_btn.clicked.connect(self.start_batch_upload)
-        settings_row2.addWidget(self.start_batch_upload_btn)
-        
-        self.stop_batch_upload_btn = QPushButton("⏹️ 停止上传")
-        self.stop_batch_upload_btn.setStyleSheet(UIStyles.get_button_style('danger'))
-        self.stop_batch_upload_btn.setEnabled(False)
-        self.stop_batch_upload_btn.clicked.connect(self.stop_batch_upload)
-        settings_row2.addWidget(self.stop_batch_upload_btn)
-        
-        batch_layout.addLayout(settings_row2)
-        
-        batch_group.setLayout(batch_layout)
-        
-        # 添加到控制布局
-        control_layout.setSpacing(10)  # 🎯 减少组之间的间距，让布局更紧凑
-        control_layout.setContentsMargins(8, 8, 8, 8)  # 🎯 减少外边距
-        control_layout.addWidget(account_group)
-        control_layout.addWidget(batch_group)
-        control_layout.addStretch()
-        control_frame.setLayout(control_layout)
-        layout.addWidget(control_frame)
-        
-        # === 账号状态表格 ===
-        table_frame = QFrame()
-        table_frame.setFrameStyle(QFrame.StyledPanel)
-        table_layout = QVBoxLayout()
-        table_layout.setSpacing(8)  # 🎯 减少表格区域间距
-        table_layout.setContentsMargins(8, 8, 8, 8)  # 🎯 减少内边距
-        
-        # 表格标题和全选控制
-        title_row = QHBoxLayout()
-        table_title = QLabel("👤 账号状态管理")
-        table_title.setStyleSheet(UIStyles.get_title_style())
-        title_row.addWidget(table_title)
-        
-        # 全选控制
-        self.select_all_checkbox = QCheckBox("全选")
-        self.select_all_checkbox.setChecked(False)  # 🎯 修改：默认不选中，会根据保存的状态调整
-        self.select_all_checkbox.clicked.connect(self.toggle_select_all)
-        title_row.addWidget(self.select_all_checkbox)
-        
-        title_row.addStretch()
-        table_layout.addLayout(title_row)
-        
-        # 账号表格
-        self.account_table = QTableWidget()
-        self.account_table.setColumnCount(8)
-        self.account_table.setHorizontalHeaderLabels([
-            "选择", "账号名", "登录状态", "浏览器状态", "最后登录", "今日已发", "进度状态", "备注"
-        ])
-        
-        # 设置表格样式
-        self.account_table.setStyleSheet(UIStyles.get_table_style())
-        
-        self.account_table.setAlternatingRowColors(True)
-        self.account_table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        
-        # 设置列宽
-        header = self.account_table.horizontalHeader()
-        header.setStretchLastSection(True)
-        header.resizeSection(0, 60)  # 选择列
-        header.resizeSection(1, UIConfig.TABLE_COLUMN_WIDTHS['account_name'])
-        header.resizeSection(2, UIConfig.TABLE_COLUMN_WIDTHS['login_status'])
-        header.resizeSection(3, UIConfig.TABLE_COLUMN_WIDTHS['browser_status'])
-        header.resizeSection(4, UIConfig.TABLE_COLUMN_WIDTHS['last_login'])
-        header.resizeSection(5, 80)  # 今日已发列
-        header.resizeSection(6, 120)  # 进度状态列
-        
-        table_layout.addWidget(self.account_table)
-        table_frame.setLayout(table_layout)
-        layout.addWidget(table_frame)
-        
-        # === 统计信息栏 ===
-        stats_frame = QFrame()
-        stats_frame.setFrameStyle(QFrame.StyledPanel)
-        stats_frame.setStyleSheet(UIStyles.get_stats_frame_style())
-        stats_layout = QHBoxLayout()
-        stats_layout.setContentsMargins(8, 6, 8, 6)  # 🎯 减少统计栏边距
-        
-        self.account_stats_label = QLabel("账号统计：等待加载...")
-        self.account_stats_label.setStyleSheet("font-weight: bold; color: #495057;")
-        
-        stats_layout.addWidget(self.account_stats_label)
-        stats_layout.addStretch()
-        stats_frame.setLayout(stats_layout)
-        layout.addWidget(stats_frame)
-        
-        widget.setLayout(layout)
-        return widget
+        account_tab = AccountTab(self)
+        return account_tab.create_widget()
     
     def create_license_tab(self):
-        """创建许可证管理标签页"""
-        widget = QWidget()
-        layout = QVBoxLayout()
+        """创建许可证标签页 - 使用模块化组件"""
+        from gui.tabs.license_tab import LicenseTab
         
-        # === 许可证状态区域 ===
-        status_group = QGroupBox("🔐 许可证状态")
-        status_layout = QVBoxLayout()
-        
-        # 许可证状态标签
-        if self.license_info and self.is_licensed:
-            status_text = f"✅ 许可证有效 | 剩余天数: {self.license_info['remaining_days']} 天 | 过期时间: {self.license_info['expire_date']}"
-            if self.license_info.get('user_info'):
-                status_text += f" | 用户: {self.license_info['user_info']}"
-            status_color = "color: green;"
-        else:
-            status_text = "⚠️ 试用模式 | 功能受限 | 请激活许可证获得完整功能"
-            status_color = "color: orange;"
-        
-        self.license_status_label = QLabel(status_text)
-        self.license_status_label.setStyleSheet(f"padding: 10px; font-weight: bold; {status_color}")
-        status_layout.addWidget(self.license_status_label)
-        
-        # 如果是试用模式，显示限制说明
-        if not self.is_licensed:
-            trial_info = QLabel(self.get_trial_limitations_text())
-            trial_info.setStyleSheet("""
-                background-color: #fff3cd;
-                border: 1px solid #ffeaa7;
-                border-radius: 4px;
-                padding: 15px;
-                margin: 10px 0;
-                color: #856404;
-                font-size: 12px;
-            """)
-            trial_info.setWordWrap(True)
-            status_layout.addWidget(trial_info)
-        
-        status_group.setLayout(status_layout)
-        layout.addWidget(status_group)
-        
-        # === 硬件指纹区域 ===
-        hardware_group = QGroupBox("💻 硬件指纹")
-        hardware_layout = QVBoxLayout()
-        
-        # 硬件指纹显示
-        hardware_fp = self.license_system.get_hardware_fingerprint()
-        
-        hardware_info_layout = QHBoxLayout()
-        hardware_info_layout.addWidget(QLabel("当前硬件指纹:"))
-        
-        self.hardware_fp_edit = QLineEdit(hardware_fp)
-        self.hardware_fp_edit.setReadOnly(True)
-        self.hardware_fp_edit.setFont(QFont("Consolas", 10))
-        hardware_info_layout.addWidget(self.hardware_fp_edit)
-        
-        copy_fp_btn = QPushButton("📋 复制")
-        copy_fp_btn.clicked.connect(self.copy_hardware_fingerprint)
-        hardware_info_layout.addWidget(copy_fp_btn)
-        
-        hardware_layout.addLayout(hardware_info_layout)
-        
-        # 说明文字
-        hardware_note = QLabel("📝 请将硬件指纹发送给软件开发者以获取正式许可证")
-        hardware_note.setStyleSheet("color: #666; font-size: 12px; padding: 5px;")
-        hardware_layout.addWidget(hardware_note)
-        
-        hardware_group.setLayout(hardware_layout)
-        layout.addWidget(hardware_group)
-        
-        # === 许可证输入区域 ===
-        input_group = QGroupBox("📝 许可证激活")
-        input_layout = QVBoxLayout()
-        
-        # 许可证输入框
-        self.license_input = QTextEdit()
-        self.license_input.setPlaceholderText("请在此处粘贴从开发者处获得的许可证内容...")
-        self.license_input.setMaximumHeight(150)
-        self.license_input.setFont(QFont("Consolas", 9))
-        input_layout.addWidget(self.license_input)
-        
-        # 按钮区域
-        button_layout = QHBoxLayout()
-        
-        verify_btn = QPushButton("✅ 验证并激活许可证")
-        verify_btn.setStyleSheet(UIStyles.get_button_style('success'))
-        verify_btn.clicked.connect(self.verify_license)
-        button_layout.addWidget(verify_btn)
-        
-        save_btn = QPushButton("💾 保存许可证")
-        save_btn.setStyleSheet(UIStyles.get_button_style('primary'))
-        save_btn.clicked.connect(self.save_license)
-        button_layout.addWidget(save_btn)
-        
-        load_btn = QPushButton("📂 从文件加载")
-        load_btn.clicked.connect(self.load_license_from_file)
-        button_layout.addWidget(load_btn)
-        
-        button_layout.addStretch()
-        input_layout.addLayout(button_layout)
-        
-        input_group.setLayout(input_layout)
-        layout.addWidget(input_group)
-        
-        # === 操作记录区域 ===
-        log_group = QGroupBox("📋 操作记录")
-        log_layout = QVBoxLayout()
-        
-        self.license_log = QTextEdit()
-        self.license_log.setMaximumHeight(150)
-        self.license_log.setReadOnly(True)
-        self.license_log.setFont(QFont("Consolas", 9))
-        log_layout.addWidget(self.license_log)
-        
-        log_group.setLayout(log_layout)
-        layout.addWidget(log_group)
-        
-        # 初始化日志信息
-        if self.is_licensed:
-            self.license_log_message("✅ 程序已授权，功能完整可用")
-        else:
-            self.license_log_message("⚠️ 程序运行在试用模式，功能受限")
-            self.license_log_message(f"💻 当前硬件指纹: {hardware_fp}")
-            self.license_log_message("📧 请联系开发者获取正式许可证")
-        
-        widget.setLayout(layout)
-        return widget
+        license_tab = LicenseTab(self)
+        return license_tab.create_widget()
     
     def create_upload_tab(self):
-        """创建浏览器上传标签页 - 方案二：保留原布局+核心改进"""
-        widget = QWidget()
-        layout = QVBoxLayout()  # 恢复原来的垂直布局
+        """创建上传标签页 - 使用模块化组件"""
+        from gui.tabs.upload_tab import UploadTab
         
-        # === 视频选择区域 ===
-        video_group = QGroupBox("📹 视频文件选择")
-        video_layout = QVBoxLayout()
-        
-        # 目录选择
-        dir_layout = QHBoxLayout()
-        self.video_dir_edit = QLineEdit()
-        self.video_dir_edit.setPlaceholderText("选择包含视频文件的目录")
-        self.video_dir_edit.textChanged.connect(self.refresh_video_list)  # 实时刷新
-        self.video_dir_edit.textChanged.connect(self.save_ui_settings)
-        dir_layout.addWidget(self.video_dir_edit)
-        
-        select_dir_btn = QPushButton("📁 选择目录")
-        select_dir_btn.clicked.connect(self.select_video_directory)
-        dir_layout.addWidget(select_dir_btn)
-        
-        refresh_dir_btn = QPushButton("🔄 刷新")
-        refresh_dir_btn.clicked.connect(self.refresh_video_list)
-        dir_layout.addWidget(refresh_dir_btn)
-        
-        # 添加打开文件夹按钮
-        open_folder_btn = QPushButton("📂 打开文件夹")
-        open_folder_btn.clicked.connect(self.open_video_folder)
-        dir_layout.addWidget(open_folder_btn)
-        
-        video_layout.addLayout(dir_layout)
-        
-        # 文件统计信息（紧凑版）
-        self.video_stats_label = QLabel("📊 文件统计: 等待加载...")
-        self.video_stats_label.setStyleSheet("color: #666; font-size: 11px; padding: 2px 5px; margin: 0px;")
-        self.video_stats_label.setMaximumHeight(20)  # 限制统计信息高度
-        video_layout.addWidget(self.video_stats_label)
-        
-        # 🎯 用户反馈：不需要加载更多按钮，移除该功能
-        
-        # 视频文件列表（增加高度，更好利用空间）
-        self.video_list = QListWidget()
-        self.video_list.setMaximumHeight(400)  # 增加高度到400px
-        self.video_list.setMinimumHeight(300)  # 设置最小高度
-        self.video_list.setAlternatingRowColors(True)
-        self.video_list.itemClicked.connect(self.on_video_selected)
-        video_layout.addWidget(self.video_list)
-        
-        # 简单的自动刷新控制
-        auto_refresh_layout = QHBoxLayout()
-        self.auto_refresh_check = QCheckBox("自动刷新文件列表")
-        self.auto_refresh_check.setChecked(True)
-        self.auto_refresh_check.toggled.connect(self.toggle_auto_refresh)
-        auto_refresh_layout.addWidget(self.auto_refresh_check)
-        auto_refresh_layout.addStretch()
-        video_layout.addLayout(auto_refresh_layout)
-        
-        video_group.setLayout(video_layout)
-        layout.addWidget(video_group)
-        
-        # === 上传设置区域 ===
-        settings_group = QGroupBox("⚙️ 上传设置")
-        settings_layout = QVBoxLayout()
-        
-        # 账号选择
-        account_layout = QHBoxLayout()
-        account_layout.addWidget(QLabel("选择账号:"))
-        self.account_combo = QComboBox()
-        account_layout.addWidget(self.account_combo)
-        account_layout.addStretch()
-        settings_layout.addLayout(account_layout)
-        
-        settings_group.setLayout(settings_layout)
-        layout.addWidget(settings_group)
-        
-        # === 控制区域 ===
-        control_group = QGroupBox("🎬 浏览器上传控制")
-        control_layout = QVBoxLayout()
-        
-        # 选中文件信息（简化版）
-        self.selected_file_label = QLabel("请选择要上传的视频文件")
-        self.selected_file_label.setStyleSheet("padding: 8px; background-color: #f8f9fa; border: 1px solid #dee2e6; border-radius: 4px;")
-        self.selected_file_label.setWordWrap(True)
-        control_layout.addWidget(self.selected_file_label)
-        
-        # 按钮区
-        button_layout = QHBoxLayout()
-        
-        self.start_upload_btn = QPushButton("🚀 开始上传")
-        self.start_upload_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #28a745;
-                color: white;
-                border: none;
-                padding: 10px 20px;
-                font-size: 13px;
-                font-weight: bold;
-                border-radius: 5px;
-            }
-            QPushButton:hover {
-                background-color: #218838;
-            }
-            QPushButton:disabled {
-                background-color: #6c757d;
-            }
-        """)
-        self.start_upload_btn.clicked.connect(self.start_browser_upload)
-        
-        self.pause_upload_btn = QPushButton("⏸️ 暂停")
-        self.pause_upload_btn.setEnabled(False)
-        self.pause_upload_btn.clicked.connect(self.pause_browser_upload)
-        
-        self.stop_upload_btn = QPushButton("⏹️ 停止")
-        self.stop_upload_btn.setEnabled(False)
-        self.stop_upload_btn.clicked.connect(self.stop_browser_upload)
-        
-        button_layout.addWidget(self.start_upload_btn)
-        button_layout.addWidget(self.pause_upload_btn)
-        button_layout.addWidget(self.stop_upload_btn)
-        button_layout.addStretch()
-        
-        control_layout.addLayout(button_layout)
-        
-        # 进度显示
-        self.upload_progress = QProgressBar()
-        self.upload_progress.setVisible(False)
-        control_layout.addWidget(self.upload_progress)
-        
-        # 状态标签
-        self.upload_status_label = QLabel("✅ 准备就绪")
-        self.upload_status_label.setStyleSheet("color: #28a745; font-weight: bold;")
-        control_layout.addWidget(self.upload_status_label)
-        
-        control_group.setLayout(control_layout)
-        layout.addWidget(control_group)
-        
-        widget.setLayout(layout)
-        return widget
+        upload_tab = UploadTab(self)
+        return upload_tab.create_widget()
 
     def create_log_tab(self):
-        """创建日志标签页"""
-        widget = QWidget()
-        layout = QVBoxLayout()
+        """创建日志标签页 - 使用模块化组件"""
+        from gui.tabs.log_tab import LogTab
         
-        # 日志控制
-        log_control = QHBoxLayout()
-        
-        # 日志过滤
-        filter_combo = QComboBox()
-        filter_combo.addItems(["全部", "信息", "警告", "错误"])
-        filter_combo.currentTextChanged.connect(self.filter_logs)
-        log_control.addWidget(QLabel("过滤:"))
-        log_control.addWidget(filter_combo)
-        
-        # 搜索
-        search_edit = QLineEdit()
-        search_edit.setPlaceholderText("搜索日志...")
-        search_edit.textChanged.connect(self.search_logs)
-        log_control.addWidget(QLabel("搜索:"))
-        log_control.addWidget(search_edit)
-        
-        # 自动滚动
-        auto_scroll_check = QCheckBox("自动滚动")
-        auto_scroll_check.setChecked(True)
-        auto_scroll_check.toggled.connect(self.toggle_auto_scroll)
-        log_control.addWidget(auto_scroll_check)
-        
-        # 清空和保存
-        clear_btn = QPushButton("清空")
-        clear_btn.clicked.connect(self.clear_log)
-        log_control.addWidget(clear_btn)
-        
-        save_btn = QPushButton("保存")
-        save_btn.clicked.connect(self.save_log)
-        log_control.addWidget(save_btn)
-        
-        log_control.addStretch()
-        layout.addLayout(log_control)
-        
-        # 日志显示
-        self.log_text = QTextEdit()
-        self.log_text.setReadOnly(True)
-        self.log_text.setFont(QFont(UIConfig.LOG_FONT_FAMILY, UIConfig.LOG_FONT_SIZE))
-        layout.addWidget(self.log_text)
-        
-        widget.setLayout(layout)
-        return widget
+        log_tab = LogTab(self)
+        return log_tab.create_widget()
     
     def setup_browser_status_timer(self):
         """🎯 简化版浏览器状态监控 - 防止线程问题"""
@@ -1707,7 +1252,7 @@ class MainWindow(QMainWindow):
             self.log_message(f"⚠️ 浏览器状态监控启动失败: {e}", "WARNING")
     
     def update_browser_status_async(self):
-        """🎯 增强版：真实检测浏览器状态，准确反映关闭状态"""
+        """🎯 增强版：真实检测浏览器状态，准确反映关闭状态 - 性能优化版"""
         try:
             # 获取当前账号列表
             accounts = []
@@ -1719,8 +1264,25 @@ class MainWindow(QMainWindow):
             if not accounts:
                 return
             
-            # 🎯 真实检测浏览器状态
-            for username in accounts:
+            # 🎯 性能优化：限制每次检查的账号数量，避免一次性检查太多造成卡顿
+            max_check_count = min(3, len(accounts))  # 每次最多检查3个账号
+            
+            # 轮询检查：使用计数器确保所有账号都能被检查到
+            if not hasattr(self, '_browser_check_counter'):
+                self._browser_check_counter = 0
+            
+            start_index = self._browser_check_counter % len(accounts)
+            accounts_to_check = []
+            
+            for i in range(max_check_count):
+                index = (start_index + i) % len(accounts)
+                accounts_to_check.append(accounts[index])
+            
+            # 更新计数器
+            self._browser_check_counter = (self._browser_check_counter + max_check_count) % len(accounts)
+            
+            # 🎯 检测选中的账号
+            for username in accounts_to_check:
                 try:
                     is_active = self.is_browser_active(username)
                     self.on_browser_status_checked(username, is_active)
@@ -1834,7 +1396,13 @@ class MainWindow(QMainWindow):
         if ok and username:
             if self.core_app.account_manager.add_account(username):
                 self.log_message(f"账号 {username} 添加成功", "SUCCESS")
-                self.refresh_accounts()
+                # 🚀 失效账号缓存，确保界面更新
+                if hasattr(self, '_invalidate_account_cache'):
+                    self._invalidate_account_cache()
+                # 🚀 强制延迟刷新，确保界面立即显示新账号
+                from PyQt5.QtCore import QTimer
+                QTimer.singleShot(100, self.refresh_accounts)
+                QTimer.singleShot(500, self.refresh_accounts)  # 双重保险确保刷新
             else:
                 self.log_message(f"账号 {username} 添加失败", "ERROR")
     
@@ -1881,7 +1449,13 @@ class MainWindow(QMainWindow):
         if reply == QMessageBox.Yes:
             self.core_app.account_manager.remove_account(username)
             self.log_message(f"账号 {username} 已删除", "SUCCESS")
-            self.refresh_accounts()
+            # 🚀 失效账号缓存，确保界面更新
+            if hasattr(self, '_invalidate_account_cache'):
+                self._invalidate_account_cache()
+            # 🚀 强制延迟刷新，确保界面立即更新
+            from PyQt5.QtCore import QTimer
+            QTimer.singleShot(100, self.refresh_accounts)
+            QTimer.singleShot(500, self.refresh_accounts)  # 双重保险确保刷新
     
 
     @prevent_double_click(duration=5.0, disable_text="诊断中...")
@@ -2160,7 +1734,18 @@ class MainWindow(QMainWindow):
                 for username in all_accounts[:5]:  # 只显示前5个
                     account = self.core_app.account_manager.get_account(username)
                     if account:
-                        status = "✅ 活跃" if account.status == 'active' else "❌ 未登录"
+                        # 兼容dict和Account对象格式
+                        if hasattr(account, '_data'):
+                            # TempAccount包装对象
+                            account_status = account.status
+                        elif isinstance(account, dict):
+                            # 原始dict格式
+                            account_status = account.get('status', 'inactive')
+                        else:
+                            # Account对象格式
+                            account_status = account.status
+                        
+                        status = "✅ 活跃" if account_status == 'active' else "❌ 未登录"
                         details.append(f"  {username}: {status}")
             
             success = len(all_accounts) > 0
@@ -2180,22 +1765,33 @@ class MainWindow(QMainWindow):
             }
     
     def refresh_accounts(self):
-        """刷新账号列表 - 修复版：防止状态错误重置"""
+        """刷新账号列表 - 性能优化版：防抖动+快速更新"""
         try:
-            # 🎯 关键修复：在刷新前记录当前所有账号的状态
-            current_statuses = {}
-            all_accounts = self.core_app.account_manager.get_all_accounts()
-            for username in all_accounts:
-                account = self.core_app.account_manager.get_account(username)
-                if account:
-                    current_statuses[username] = {
-                        'status': account.status,
-                        'cookies_count': len(account.cookies) if hasattr(account, 'cookies') else 0,
-                        'last_login': getattr(account, 'last_login', 0)
-                    }
+            # 🎯 性能优化：防抖动机制 - 避免短时间内重复刷新
+            current_time = time.time()
+            if not hasattr(self, '_last_refresh_time'):
+                self._last_refresh_time = 0
             
-            self.log_message(f"🔍 刷新前状态快照: {[(k, v['status']) for k, v in current_statuses.items()]}", "DEBUG")
+            # 如果距离上次刷新不到0.5秒，启用防抖动
+            if current_time - self._last_refresh_time < 0.5:
+                if not hasattr(self, '_refresh_debounce_timer'):
+                    self._refresh_debounce_timer = QTimer()
+                    self._refresh_debounce_timer.setSingleShot(True)
+                    self._refresh_debounce_timer.timeout.connect(self._do_refresh_accounts)
+                
+                # 重置定时器，延迟500ms执行
+                self._refresh_debounce_timer.start(500)
+                return
             
+            self._last_refresh_time = current_time
+            self._do_refresh_accounts()
+            
+        except Exception as e:
+            self.log_message(f"❌ 刷新账号列表失败: {str(e)}", "ERROR")
+    
+    def _do_refresh_accounts(self):
+        """实际执行账号刷新"""
+        try:
             accounts = self.core_app.account_manager.get_all_accounts()
             
             if not hasattr(self, 'account_table'):
@@ -2221,7 +1817,6 @@ class MainWindow(QMainWindow):
                 is_selected = False
                 if hasattr(self, '_account_selections') and username in self._account_selections:
                     is_selected = self._account_selections[username]
-                    self.log_message(f"🔍 恢复账号 {username} 选择状态: {is_selected}", "DEBUG")
                 
                 checkbox.setChecked(is_selected)
                 checkbox.stateChanged.connect(self.on_account_selection_changed)
@@ -2230,18 +1825,27 @@ class MainWindow(QMainWindow):
                 # 账号名
                 self.account_table.setItem(row, 1, QTableWidgetItem(username))
                 
-                # 🎯 修复：登录状态 - 使用更稳定的状态判断逻辑
-                # 只有当账号状态明确为active且有有效cookies时才显示已登录
-                is_really_logged_in = (account.status == 'active' and 
-                                       hasattr(account, 'cookies') and 
-                                       len(account.cookies) > 0 and
-                                       account.is_logged_in())
+                # 🎯 修复：登录状态 - 使用更稳定的状态判断逻辑，减少耗时检查
+                # 兼容dict和Account对象格式
+                if hasattr(account, '_data'):
+                    # TempAccount包装对象
+                    account_status = account.status
+                    account_cookies = account.cookies
+                elif isinstance(account, dict):
+                    # 原始dict格式
+                    account_status = account.get('status', 'inactive')
+                    account_cookies = account.get('cookies', [])
+                else:
+                    # Account对象格式
+                    account_status = account.status
+                    account_cookies = getattr(account, 'cookies', [])
+                
+                is_really_logged_in = (account_status == 'active' and 
+                                       account_cookies and 
+                                       len(account_cookies) > 0)
                 
                 status_text = "已登录" if is_really_logged_in else "未登录"
                 status_item = QTableWidgetItem(status_text)
-                
-                # 🔍 调试日志：记录状态判断过程
-                self.log_message(f"🔍 账号 {username} 状态检查: status={account.status}, cookies={len(account.cookies) if hasattr(account, 'cookies') else 0}, 最终状态={status_text}", "DEBUG")
                 
                 if is_really_logged_in:
                     status_item.setBackground(QColor(144, 238, 144))  # 浅绿色
@@ -2265,82 +1869,84 @@ class MainWindow(QMainWindow):
                     last_login = "从未登录"
                 self.account_table.setItem(row, 4, QTableWidgetItem(last_login))
                 
-                # 🎯 获取目标数量（从界面设置获取）
-                target_count = 1  # 默认值，如果界面有设置就使用界面值
-                if hasattr(self, 'videos_per_account_input'):
-                    try:
-                        target_count = int(self.videos_per_account_input.text())
-                    except:
-                        target_count = 1
-                
-                # 🎯 新增：今日已发数量
-                from core.account_manager import account_manager
+                # 🎯 性能优化：进度信息延迟加载，避免阻塞
                 try:
+                    target_count = 1
+                    if hasattr(self, 'videos_per_account_input'):
+                        try:
+                            target_count = int(self.videos_per_account_input.text())
+                        except:
+                            target_count = 1
+                    
+                    # 🎯 简化进度获取，减少文件I/O
+                    from core.account_manager import account_manager
                     status, completed, published = account_manager.get_account_progress(username, target_count)
                     
                     # 今日已发列
                     today_published_item = QTableWidgetItem(str(published))
                     today_published_item.setTextAlignment(Qt.AlignCenter)
                     if completed:
-                        today_published_item.setBackground(QColor(144, 238, 144))  # 已完成：绿色
+                        today_published_item.setBackground(QColor(144, 238, 144))
                     else:
-                        today_published_item.setBackground(QColor(255, 255, 200))  # 进行中：淡黄色
+                        today_published_item.setBackground(QColor(255, 255, 200))
                     self.account_table.setItem(row, 5, today_published_item)
                     
                     # 进度状态列
                     progress_item = QTableWidgetItem(status)
                     progress_item.setTextAlignment(Qt.AlignCenter)
                     if completed:
-                        progress_item.setBackground(QColor(144, 238, 144))  # 已完成：绿色
-                        progress_item.setForeground(QColor(0, 100, 0))     # 深绿色字体
+                        progress_item.setBackground(QColor(144, 238, 144))
+                        progress_item.setForeground(QColor(0, 100, 0))
                     else:
-                        progress_item.setBackground(QColor(255, 255, 200))  # 进行中：淡黄色
-                        progress_item.setForeground(QColor(100, 100, 0))   # 深黄色字体
+                        progress_item.setBackground(QColor(255, 255, 200))
+                        progress_item.setForeground(QColor(100, 100, 0))
                     self.account_table.setItem(row, 6, progress_item)
                     
                 except Exception as e:
                     # 如果获取进度失败，显示默认值
                     self.account_table.setItem(row, 5, QTableWidgetItem("0"))
-                    self.account_table.setItem(row, 6, QTableWidgetItem("0/0 错误"))
+                    self.account_table.setItem(row, 6, QTableWidgetItem("获取中..."))
                 
-                # 备注（列索引改为7）
+                # 备注
                 notes = getattr(account, 'notes', "")
                 self.account_table.setItem(row, 7, QTableWidgetItem(notes))
             
             # 🎯 性能优化：重新启用信号
             self.account_table.blockSignals(False)
             
-            # 🎯 性能优化：显示带进度的统计信息
+            # 🎯 性能优化：显示统计信息
             try:
                 target_count = int(self.videos_per_account_input.text()) if hasattr(self, 'videos_per_account_input') else 1
                 self._update_account_stats_with_progress(target_count)
             except:
-                # 如果进度统计失败，回退到基本统计
                 total_accounts = len(accounts)
-                active_accounts = len([a for a in accounts if self.core_app.account_manager.get_account(a).status == 'active'])
+                active_accounts = 0
+                for a in accounts:
+                    account = self.core_app.account_manager.get_account(a)
+                    if account:
+                        # 兼容dict和Account对象格式
+                        if hasattr(account, '_data'):
+                            # TempAccount包装对象
+                            account_status = account.status
+                        elif isinstance(account, dict):
+                            # 原始dict格式
+                            account_status = account.get('status', 'inactive')
+                        else:
+                            # Account对象格式
+                            account_status = account.status
+                        
+                        if account_status == 'active':
+                            active_accounts += 1
                 stats_text = f"账号统计：总数 {total_accounts}，活跃 {active_accounts}"
-                self.account_stats_label.setText(stats_text)
+                if hasattr(self, 'account_stats_label'):
+                    self.account_stats_label.setText(stats_text)
             
-            # 🔍 验证刷新后的状态是否发生了意外变化
-            if 'current_statuses' in locals():
-                unexpected_changes = []
-                for username in accounts:
-                    account = self.core_app.account_manager.get_account(username)
-                    if account and username in current_statuses:
-                        old_status = current_statuses[username]['status']
-                        new_status = account.status
-                        if old_status != new_status and old_status == 'active':
-                            unexpected_changes.append(f"{username}: {old_status} -> {new_status}")
-                
-                if unexpected_changes:
-                    self.log_message(f"⚠️ 检测到意外的状态变化: {unexpected_changes}", "WARNING")
-                    self.log_message("🔧 这可能是导致其他账号显示未登录的原因", "WARNING")
-            
-            # 🎯 新增：刷新全选框状态，避免状态不一致
-            self.on_account_selection_changed()
+            # 🎯 刷新全选框状态
+            if hasattr(self, 'on_account_selection_changed'):
+                self.on_account_selection_changed()
             
         except Exception as e:
-            self.log_message(f"❌ 刷新账号列表失败: {str(e)}", "ERROR")
+            self.log_message(f"❌ 账号刷新执行失败: {str(e)}", "ERROR")
     
     def _get_cached_browser_status(self, username: str) -> str:
         """获取缓存的浏览器状态，避免实时检查造成卡顿"""
@@ -3003,11 +2609,12 @@ class MainWindow(QMainWindow):
             return False
     
     def _quick_port_check(self, port: int) -> bool:
-        """快速检查DevTools端口"""
+        """快速检查DevTools端口 - 优化版：减少超时时间"""
         try:
             import requests
             devtools_url = f"http://127.0.0.1:{port}/json"
-            response = requests.get(devtools_url, timeout=1)
+            # 🎯 关键优化：减少超时时间从1秒到0.3秒，避免主线程长时间阻塞
+            response = requests.get(devtools_url, timeout=0.3)
             return response.status_code == 200
         except:
             return False
@@ -3221,8 +2828,17 @@ class MainWindow(QMainWindow):
                     
                                          # 🎯 乐观策略：一旦有登录凭据就认为可用，不频繁检查状态
                     if has_cookies:
-                        # 有Cookie就认为登录有效，强制设置为active状态
-                        account.status = 'active'
+                        # 有Cookie就认为登录有效，强制设置为active状态 - 兼容dict和Account对象格式
+                        if hasattr(account, '_data'):
+                            # TempAccount包装对象
+                            account.status = 'active'
+                        elif isinstance(account, dict):
+                            # 原始dict格式
+                            account['status'] = 'active'
+                        else:
+                            # Account对象格式
+                            account.status = 'active'
+                        
                         valid_accounts.append((account_name, account))
                         self.log_message(f"✅ 账号 {account_name} 有登录凭据，视为有效账号", "SUCCESS")
                     else:
@@ -4194,7 +3810,23 @@ class MainWindow(QMainWindow):
             try:
                 accounts = self.core_app.account_manager.get_all_accounts()
                 total_accounts = len(accounts)
-                active_accounts = len([a for a in accounts if self.core_app.account_manager.get_account(a).status == 'active'])
+                active_accounts = 0
+                for a in accounts:
+                    account = self.core_app.account_manager.get_account(a)
+                    if account:
+                        # 兼容dict和Account对象格式
+                        if hasattr(account, '_data'):
+                            # TempAccount包装对象
+                            account_status = account.status
+                        elif isinstance(account, dict):
+                            # 原始dict格式
+                            account_status = account.get('status', 'inactive')
+                        else:
+                            # Account对象格式
+                            account_status = account.status
+                        
+                        if account_status == 'active':
+                            active_accounts += 1
                 stats_text = f"账号统计：总数 {total_accounts}，活跃 {active_accounts}"
                 self.account_stats_label.setText(stats_text)
             except:

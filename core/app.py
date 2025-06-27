@@ -848,17 +848,25 @@ class AccountManager:
         return False
     
     def get_account(self, username: str) -> Optional[Account]:
-        """获取账号"""
-        return self.accounts.get(username)
+        """获取账号 - 兼容dict和Account对象"""
+        from .account_adapter import get_account_safely
+        
+        raw_account = self.accounts.get(username)
+        return get_account_safely(raw_account, self, username)
     
     def get_all_accounts(self) -> List[str]:
         """获取所有账号名"""
         return list(self.accounts.keys())
     
     def get_active_accounts(self) -> List[str]:
-        """获取活跃账号"""
-        return [username for username, account in self.accounts.items() 
-                if account.status == 'active']
+        """获取活跃账号 - 兼容dict格式"""
+        from .account_adapter import get_account_status_safely
+        
+        result = []
+        for username, account_data in self.accounts.items():
+            if get_account_status_safely(account_data) == 'active':
+                result.append(username)
+        return result
     
     def login_account(self, username: str) -> bool:
         """登录账号"""
@@ -1157,12 +1165,30 @@ class AccountManager:
                             self.logger.info(f"✅ 账号 {username} 登录成功，状态已保存")
                             
                             # 🔍 验证保存结果
+                            from .account_adapter import get_account_status_safely
+                            
                             saved_account = self.get_account(username)
-                            if saved_account and saved_account.status == 'active':
-                                self.logger.info(f"✅ 验证：账号 {username} 状态正确保存为 active")
-                                return True
+                            if saved_account:
+                                account_status = get_account_status_safely(saved_account)
+                                self.logger.info(f"🔍 调试：获取到的状态值: {account_status}, 类型: {type(account_status)}")
+                                
+                                if account_status == 'active':
+                                    self.logger.info(f"✅ 验证：账号 {username} 状态正确保存为 active")
+                                    return True
+                                else:
+                                    # 兼容问题：重新加载账号数据
+                                    self.load_accounts()
+                                    new_saved_account = self.get_account(username)
+                                    if new_saved_account:
+                                        new_status = get_account_status_safely(new_saved_account)
+                                        if new_status == 'active':
+                                            self.logger.info(f"✅ 验证（重新加载后）：账号 {username} 状态正确保存为 active")
+                                            return True
+                                    
+                                    self.logger.error(f"❌ 验证失败：账号 {username} 状态为 {account_status} 而不是 active")
+                                    return False
                             else:
-                                self.logger.error(f"❌ 验证失败：账号 {username} 状态保存不正确")
+                                self.logger.error(f"❌ 验证失败：无法获取账号 {username}")
                                 return False
                         else:
                             self.logger.error(f"❌ 保存账号状态失败")
@@ -1318,73 +1344,42 @@ class AccountManager:
     
     def _generate_fingerprint(self, username: str) -> Dict[str, Any]:
         """生成浏览器指纹 - 确保同一账号永远使用相同指纹"""
-        # 使用用户名作为种子，确保可重现性
-        seed = int(hashlib.md5(username.encode()).hexdigest()[:8], 16)
-        random.seed(seed)
+        from .utils import generate_fixed_fingerprint
         
-        # 预定义选项池
-        window_sizes = ["1920,1080", "1680,1050", "1536,864", "1440,900", "1366,768", "1280,800"]  # 增加更多现代屏幕尺寸
-        languages = [
-            "zh-CN,zh;q=0.9,en;q=0.8",
-            "zh-CN,zh;q=0.8,zh-TW;q=0.7,en;q=0.5"
-        ]
-        
-        # 为确保稳定性，使用固定的Chrome版本User-Agent池
-        user_agents = [
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
-        ]
-        
-        # 基于种子选择固定的指纹组合
-        fingerprint = {
-            'user_agent': random.choice(user_agents),
-            'window_size': random.choice(window_sizes),
-            'language': random.choice(languages),
-            'timezone': 'Asia/Shanghai',
-            
-            # 添加更多指纹特征以提高唯一性
-            'viewport': random.choice(window_sizes),
-            'screen_resolution': random.choice(["1920x1080", "1366x768", "1536x864"]),
-            'color_depth': random.choice([24, 32]),
-            'platform': "Win32",
-            'webgl_vendor': "Google Inc. (Intel)",
-            'webgl_renderer': random.choice([
-                "ANGLE (Intel, Intel(R) HD Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)",
-                "ANGLE (Intel, Intel(R) UHD Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)"
-            ])
-        }
-        
+        fingerprint = generate_fixed_fingerprint(username)
         self.logger.info(f"为账号 {username} 生成固定指纹: {fingerprint['user_agent'][:50]}...")
         
         return fingerprint
 
     def is_browser_active(self, username: str) -> bool:
         """检查账号的浏览器是否活跃（简化版本，可以后续增强）"""
+        from .account_adapter import get_account_status_safely
+        
         # 这里可以添加更复杂的逻辑，比如检查浏览器最后活动时间
         # 目前简化为检查账号状态
         account = self.get_account(username)
-        return bool(account and account.status == 'active')
+        if not account:
+            return False
+        
+        return get_account_status_safely(account) == 'active'
     
     def is_browser_active_simple(self, account_name: str) -> bool:
         """简化的浏览器状态检测 - 利用固定端口策略"""
+        from .utils import check_port_available
+        
         try:
             # 获取账号的固定端口
             port = self._get_account_debug_port(account_name)
             
             # 快速检查端口是否有浏览器在监听
-            import socket
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-                sock.settimeout(1)
-                result = sock.connect_ex(('localhost', port))
-                is_active = (result == 0)  # 0表示连接成功（端口被占用）
-                
-                if is_active:
-                    self.logger.debug(f"🎯 账号 {account_name} 浏览器活跃 (端口 {port})")
-                else:
-                    self.logger.debug(f"🎯 账号 {account_name} 浏览器未活跃 (端口 {port})")
-                
-                return is_active
+            is_active = check_port_available(port, timeout=1.0)
+            
+            if is_active:
+                self.logger.debug(f"🎯 账号 {account_name} 浏览器活跃 (端口 {port})")
+            else:
+                self.logger.debug(f"🎯 账号 {account_name} 浏览器未活跃 (端口 {port})")
+            
+            return is_active
                 
         except Exception as e:
             self.logger.debug(f"🎯 账号 {account_name} 状态检测失败: {e}")

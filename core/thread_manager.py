@@ -9,7 +9,6 @@ import time
 import threading
 from typing import Dict, List, Optional, Callable, Any
 from PyQt5.QtCore import QThread, pyqtSignal, QObject, QMutex, QWaitCondition
-from abc import ABC, abstractmethod
 
 class ThreadPool:
     """线程池管理器"""
@@ -87,7 +86,7 @@ class ThreadPool:
             self.mutex.unlock()
 
 
-class BaseWorkerThread(QThread, ABC):
+class BaseWorkerThread(QThread):
     """基础工作线程 - 所有业务线程的基类"""
     
     # 通用信号
@@ -165,10 +164,9 @@ class BaseWorkerThread(QThread, ABC):
         finally:
             self.emit_status("线程结束")
     
-    @abstractmethod
     def execute_task(self) -> bool:
         """执行具体任务 - 子类必须实现"""
-        pass
+        raise NotImplementedError("子类必须实现execute_task方法")
 
 
 class LoginWorkerThread(BaseWorkerThread):
@@ -220,7 +218,22 @@ class VideoUploadWorkerThread(BaseWorkerThread):
         
         # 验证账号
         account = self.core_app.account_manager.get_account(self.account_name)
-        if not account or account.status != 'active':
+        if not account:
+            self.emit_error("账号不存在")
+            return False
+        
+        # 兼容dict和Account对象格式
+        if hasattr(account, '_data'):
+            # TempAccount包装对象
+            account_status = account.status
+        elif isinstance(account, dict):
+            # 原始dict格式
+            account_status = account.get('status', 'inactive')
+        else:
+            # Account对象格式
+            account_status = account.status
+        
+        if account_status != 'active':
             self.emit_error("账号未激活")
             return False
         
