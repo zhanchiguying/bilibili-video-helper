@@ -4,6 +4,11 @@ B站视频带货助手_完整EXE版.rar
 ms-playwright
 videos
 
+config.json
+uploaded_videos.json
+accounts.json
+*_bak
+
 # 构建临时目录
 build_temp/
 build_temp_license/
