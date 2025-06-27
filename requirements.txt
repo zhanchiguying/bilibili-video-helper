@@ -1,0 +1,9 @@
+selenium>=4.0.0
+webdriver-manager==4.0.1
+PyQt5>=5.15.0
+cryptography==41.0.7
+fake-useragent==1.4.0
+requests>=2.25.0
+opencv-python
+psutil>=5.8.0
+py-cpuinfo 

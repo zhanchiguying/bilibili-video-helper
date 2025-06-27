@@ -1,0 +1,43 @@
+{
+  "uploaded_videos": {
+    "f6c583db01c3a7f23a985ffc71f150ee": {
+      "filename": "100022610146----小仙女们都在用的雅诗兰黛小棕瓶精华露来了#618购物.mp4",
+      "upload_time": 1750872006,
+      "account": "测试1",
+      "product_id": "100022610146",
+      "deleted": true
+    },
+    "5632993eb045ef9e898a12c994676ba0": {
+      "filename": "100027244328----飞利浦电动剃须刀，舒适贴合剃须干净.mp4",
+      "upload_time": 1750872209,
+      "account": "测试1",
+      "product_id": "100027244328",
+      "deleted": true
+    },
+    "28a2361cb5b56beb5625faf3c6a48111": {
+      "filename": "100027244328----飞利浦进口电动剃须刀，舒适低噪音剃须干净.mp4",
+      "upload_time": 1750910010,
+      "account": "测试1",
+      "product_id": "100027244328",
+      "deleted": true
+    },
+    "0ec358c245e490d083107d022f86ace2": {
+      "filename": "100028204727----推荐华帝燃气灶，高颜值.mp4",
+      "upload_time": 1750910410,
+      "account": "测试2",
+      "product_id": "100028204727",
+      "deleted": true
+    }
+  },
+  "description": "记录已上传视频的MD5值，防止重复上传导致封号",
+  "created_at": "2025-01-25",
+  "format": {
+    "video_md5": {
+      "filename": "原始文件名",
+      "upload_time": "上传时间戳",
+      "account": "上传账号",
+      "product_id": "商品ID",
+      "deleted": "是否已删除"
+    }
+  }
+}
