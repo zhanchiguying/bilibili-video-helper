@@ -1,0 +1,25 @@
+{
+  "video_directory": "videos",
+  "upload_settings": {
+    "title_template": "{filename}",
+    "description": "精彩视频内容，欢迎观看！",
+    "tags": [
+      "带货",
+      "推荐",
+      "好物"
+    ],
+    "category": "生活",
+    "success_wait_time": 2
+  },
+  "browser_settings": {
+    "headless": false,
+    "window_size": "1920,1080"
+  },
+  "ui_settings": {
+    "concurrent_browsers": "2",
+    "videos_per_account": "1",
+    "video_directory": "",
+    "account_selections": {},
+    "success_wait_time": 2
+  }
+}

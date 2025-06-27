@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-简化的EXE构建器 - 使用系统Python避免路径问题
+EXE构建器 - 创建纯净的独立EXE文件
 """
 
 import os
@@ -10,118 +10,63 @@ import shutil
 import subprocess
 from pathlib import Path
 
-def build_simple_exe():
-    """构建简化的EXE"""
-    print("开始构建EXE...")
+def build_main_exe():
+    """构建主程序EXE"""
+    print("🚀 开始构建主程序EXE...")
     
-    # 🎯 优化：直接在项目目录创建构建目录，无需拷贝到C盘
-    current_dir = Path(__file__).parent.parent  # 项目根目录
-    temp_dir = current_dir / "build_temp"
+    # 项目根目录
+    project_dir = Path(__file__).parent.parent
+    temp_dir = project_dir / "build_temp"
+    
+    # 清理临时目录
     if temp_dir.exists():
         shutil.rmtree(temp_dir)
     temp_dir.mkdir()
     
     try:
-        # 复制必要文件
-        current_dir = Path(__file__).parent.parent  # 修正：上一级目录才是项目根目录
-        
-        # 完整复制core目录（确保所有文件都复制）
-        print("复制core目录...")
-        shutil.copytree(current_dir / "core", temp_dir / "core")
-        
-        # 复制主要Python文件
-        main_files = ["main.py", "gui.py"]
-        for file_name in main_files:
-            src_file = current_dir / file_name
-            if src_file.exists():
-                shutil.copy2(src_file, temp_dir)
-                print(f"复制文件: {file_name}")
-            else:
-                print(f"文件不存在，跳过: {file_name}")
-        
-        # 复制配置文件
-        config_files = ["config.json", "accounts.json", "uploaded_videos.json"]
-        for file_name in config_files:
-            src_file = current_dir / file_name
-            if src_file.exists():
-                shutil.copy2(src_file, temp_dir)
-            else:
-                # 创建空配置文件
-                with open(temp_dir / file_name, 'w', encoding='utf-8') as f:
-                    if file_name.endswith('.json'):
-                        f.write('{}')
-        
-        # 不复制ms-playwright到临时目录（将通过独立方式提供）
-        print("跳过ms-playwright复制（将作为独立文件包提供）")
-        
-        # 复制匹配版本的ChromeDriver
-        drivers_dir = temp_dir / "drivers"
-        drivers_dir.mkdir(exist_ok=True)
-        if (current_dir / "drivers" / "chromedriver.exe").exists():
-            shutil.copy2(current_dir / "drivers" / "chromedriver.exe", drivers_dir / "chromedriver.exe")
-            print("✅ 已复制匹配版本的ChromeDriver (139.0.7246.0)")
-        
-        # 复制图标文件
-        icons_dir = temp_dir / "icons"
-        if (current_dir / "icons").exists():
-            shutil.copytree(current_dir / "icons", icons_dir)
-            print("✅ 已复制程序图标文件")
-        else:
-            print("⚠️ 图标文件夹不存在，跳过图标复制")
-        
-        # 创建目录
-        (temp_dir / "videos").mkdir()
-        (temp_dir / "logs").mkdir()
-        
-        # 切换到临时目录
-        os.chdir(temp_dir)
-        
         # 使用系统Python
         system_python = r"D:\Program Files (x86)\python\python.exe"
         
-        # 构建命令 - 添加更多隐藏导入
+        # 构建命令 - 只使用必要的参数
         cmd = [
             system_python, "-m", "PyInstaller",
-            "--onefile",
-            "--windowed",
-            "--name=BilibiliUploader",
-            "--add-data=core;core",
-            "--add-data=config.json;.",
-            "--add-data=accounts.json;.",
-            "--add-data=uploaded_videos.json;.",
-        ]
-        
-        # 添加图标（如果存在）
-        icon_file = temp_dir / "icons" / "app_icon.ico"
-        if icon_file.exists():
-            cmd.append(f"--icon={icon_file}")
-            print(f"✅ 已添加程序图标: {icon_file}")
-        else:
-            print("⚠️ 未找到图标文件，使用默认图标")
-        
-        # 添加图标文件夹到数据
-        if (temp_dir / "icons").exists():
-            cmd.append("--add-data=icons;icons")
-        
-        # 继续添加其他参数
-        additional_args = [
+            "--onefile",                    # 单文件模式
+            "--windowed",                   # 无控制台窗口
+            "--name=B站视频助手",           # EXE名称
+            "--distpath=" + str(project_dir / "dist"),  # 输出目录
+            "--workpath=" + str(temp_dir),  # 工作目录
+            "--specpath=" + str(temp_dir),  # spec文件目录
+            
+            # 🎯 修复：不强制添加配置文件，让程序运行时自动创建
+            # "--add-data=config.json;.",
+            # "--add-data=accounts.json;.",
+            # "--add-data=uploaded_videos.json;.",
+            
+            # 添加图标
+            "--icon=" + str(project_dir / "icons" / "icon_32x32.png"),
+            
+            # 🎯 关键修复：添加图标文件到EXE包中，程序运行时需要
+            "--add-data=" + str(project_dir / "icons") + ";icons",
+            
+            # 隐藏导入模块
             "--hidden-import=PyQt5.QtCore",
-            "--hidden-import=PyQt5.QtGui",
+            "--hidden-import=PyQt5.QtGui", 
             "--hidden-import=PyQt5.QtWidgets",
             "--hidden-import=PyQt5.QtNetwork",
             "--hidden-import=selenium",
             "--hidden-import=selenium.webdriver",
             "--hidden-import=selenium.webdriver.chrome",
-            "--hidden-import=selenium.webdriver.chrome.options",
             "--hidden-import=selenium.webdriver.chrome.service",
             "--hidden-import=selenium.webdriver.common.by",
             "--hidden-import=selenium.webdriver.support.wait",
             "--hidden-import=selenium.webdriver.support.expected_conditions",
             "--hidden-import=cryptography",
-            # "--hidden-import=cryptography.fernet",  # 🎯 已移除加密功能
             "--hidden-import=fake_useragent",
             "--hidden-import=webdriver_manager",
             "--hidden-import=webdriver_manager.chrome",
+            
+            # 项目模块
+            "--hidden-import=core",
             "--hidden-import=core.app",
             "--hidden-import=core.config",
             "--hidden-import=core.logger",
@@ -130,215 +75,86 @@ def build_simple_exe():
             "--hidden-import=core.browser_detector",
             "--hidden-import=core.fingerprint_validator",
             "--hidden-import=core.license_system",
+            "--hidden-import=services",
+            "--hidden-import=services.account_service",
+            "--hidden-import=services.upload_service",
+            "--hidden-import=services.license_service",
+            "--hidden-import=services.file_service",
+            "--hidden-import=services.settings_service",
+            "--hidden-import=gui",
+            "--hidden-import=gui.main_window",
+            "--hidden-import=gui.tabs",
+            "--hidden-import=gui.tabs.account_tab",
+            "--hidden-import=gui.tabs.upload_tab",
+            "--hidden-import=gui.tabs.license_tab",
+            "--hidden-import=gui.tabs.log_tab",
+            "--hidden-import=performance",
+            "--hidden-import=performance.cache_manager",
+            "--hidden-import=performance.task_queue",
+            
+            # 清理和确认选项
             "--clean",
             "--noconfirm",
-            "main.py"
+            
+            # 主入口文件
+            str(project_dir / "main.py")
         ]
         
-        # 合并所有命令参数
-        cmd.extend(additional_args)
-        
-        print("使用系统Python构建...")
+        print("📦 使用PyInstaller构建...")
         print(f"命令: {' '.join(cmd[:5])}...")
         
         # 运行构建
-        env = os.environ.copy()
-        env['PYTHONIOENCODING'] = 'utf-8'
-        
-        result = subprocess.run(cmd, env=env, cwd=str(temp_dir))
+        result = subprocess.run(cmd, cwd=str(project_dir))
         
         if result.returncode == 0:
-            # 复制结果到原目录
-            exe_file = temp_dir / "dist" / "BilibiliUploader.exe"
+            exe_file = project_dir / "dist" / "B站视频助手.exe"
             if exe_file.exists():
-                target_dir = current_dir / "B站视频带货助手_完整EXE版"
-                if target_dir.exists():
-                    shutil.rmtree(target_dir)
-                target_dir.mkdir()
-                
-                shutil.copy2(exe_file, target_dir / "B站视频带货助手.exe")
-                (target_dir / "videos").mkdir()
-                (target_dir / "logs").mkdir()
-                
-                # 复制ms-playwright作为独立目录
-                if (current_dir / "ms-playwright").exists():
-                    print("复制ms-playwright到EXE版目录...")
-                    shutil.copytree(current_dir / "ms-playwright", target_dir / "ms-playwright")
-                    print("✅ ms-playwright已作为独立文件夹复制")
-                
-                # 复制upgrade_ms_playwright.py工具
-                if (current_dir / "upgrade_ms_playwright.py").exists():
-                    shutil.copy2(current_dir / "upgrade_ms_playwright.py", target_dir)
-                    print("✅ 已复制浏览器升级工具")
-                
-                # Chrome修复工具已移除，程序内置自动修复机制
-                
-                # 复制示例视频
-                if (current_dir / "videos").exists():
-                    for video in list((current_dir / "videos").glob("*.mp4"))[:2]:
-                        try:
-                            shutil.copy2(video, target_dir / "videos")
-                        except:
-                            pass
-                
-                # 创建启动脚本（移除emoji字符）
-                start_bat = '''@echo off
-chcp 65001 >nul
-title B站视频带货助手 v2.0
-color 0A
-
-echo.
-echo =========================================
-echo    B站视频带货助手 v2.0 完整EXE版
-echo =========================================
-echo.
-
-:: 检查浏览器文件夹
-if not exist "ms-playwright\\chromium-139" (
-    echo [警告] 未找到浏览器文件夹
-    echo.
-    echo 解决方案：
-    echo 1. 运行 upgrade_ms_playwright.py 自动下载
-    echo 2. 或在程序中使用浏览器诊断功能
-    echo.
-    echo 继续启动程序...
-    timeout /t 3 >nul
-)
-
-echo [信息] 启动程序...
-echo 首次运行可能需要2-3分钟初始化
-echo.
-
-start "" "B站视频带货助手.exe"
-
-echo [成功] 程序已启动
-echo.
-echo 提示：
-echo - 独立浏览器文件夹，不占用EXE体积
-echo - 如被杀毒软件拦截请添加信任
-echo - 如果登录失败，使用浏览器诊断功能
-echo - 如有问题请联系技术支持
-echo.
-timeout /t 3 >nul
-'''
-                with open(target_dir / "启动程序.bat", 'w', encoding='utf-8') as f:
-                    f.write(start_bat)
-                
-                # 创建使用说明
-                readme = '''# B站视频带货助手 v2.0 完整EXE版
-
-## 快速开始
-1. 双击"启动程序.bat"启动程序
-2. 或直接双击"B站视频带货助手.exe"
-3. 首次运行需要2-3分钟初始化
-4. 在"账号管理"页面添加B站账号
-
-## 浏览器配置
-- 包含独立的ms-playwright浏览器文件夹
-- 内置智能Chrome启动修复系统
-- 可使用程序内的"🔍 浏览器诊断"功能检查状态
-
-## Chrome启动问题解决
-如果程序启动时遇到浏览器问题：
-1. 使用程序内置的智能修复机制
-2. 点击"🔍 浏览器诊断"按钮检查状态
-3. 程序会自动配置最佳的Chrome启动方式
-
-## 特色功能
-- 完全免安装，开箱即用
-- 智能Chrome启动修复
-- 独立浏览器文件夹，不占用EXE体积
-- 无需安装Python或其他依赖
-- 支持批量视频上传
-- 包含许可证生成器
-
-## 使用方法
-1. 将视频文件放入videos文件夹
-2. 文件命名格式：商品ID----商品名称.mp4
-3. 在软件中选择账号和视频开始上传
-
-## 故障排除
-1. Chrome启动问题：程序内置自动修复机制
-2. 登录失败：点击"🔍 浏览器诊断"按钮
-3. 浏览器文件缺失：运行"upgrade_ms_playwright.py"
-4. 网络连接异常：尝试切换到手机热点
-
-## 启动方式说明
-- 启动程序.bat：标准启动方式
-- 直接运行exe：适合高级用户
-- 程序内置智能Chrome修复机制
-
-## 系统要求
-- Windows 10/11（64位）
-- 至少4GB可用内存
-- 网络连接
-
-版本：v2.0.0 完整EXE版（内置智能修复）
-'''
-                with open(target_dir / "使用说明.txt", 'w', encoding='utf-8') as f:
-                    f.write(readme)
-                
-                # 计算文件大小
                 exe_size = exe_file.stat().st_size / (1024 * 1024)
-                print(f"成功！EXE文件大小: {exe_size:.1f} MB")
-                print(f"完整包位置: {target_dir}")
+                print(f"✅ 主程序构建成功！EXE大小: {exe_size:.1f} MB")
                 return True
         
-        print("构建失败")
+        print("❌ 主程序构建失败")
         return False
         
     finally:
-        # 清理
+        # 清理临时目录
         try:
-            os.chdir(Path(__file__).parent)
             shutil.rmtree(temp_dir)
         except:
             pass
 
 def build_license_exe():
     """构建许可证生成器EXE"""
-    print("\n开始构建许可证生成器EXE...")
+    print("\n🔐 开始构建许可证生成器EXE...")
     
-    # 🎯 优化：在项目目录创建许可证构建目录
-    current_dir = Path(__file__).parent.parent  # 项目根目录  
-    temp_dir = current_dir / "build_temp_license"
+    project_dir = Path(__file__).parent.parent
+    temp_dir = project_dir / "build_temp_license"
+    
+    # 清理临时目录
     if temp_dir.exists():
         shutil.rmtree(temp_dir)
     temp_dir.mkdir()
     
     try:
-        current_dir = Path(__file__).parent.parent  # 修正：许可证生成器也需要正确的项目根目录
+        # 复制许可证生成器文件
+        shutil.copy2(project_dir / "tools" / "license_gui.py", temp_dir / "main.py")
         
-        # 复制许可证生成器文件（使用tools目录下的license_gui.py）
-        tools_dir = Path(__file__).parent  # tools目录路径
-        shutil.copy2(tools_dir / "license_gui.py", temp_dir / "main.py")
-        
-        # 创建独立的core目录，只包含许可证相关文件
+        # 复制核心文件到临时目录
         core_dir = temp_dir / "core"
         core_dir.mkdir()
         
-        # 只复制许可证生成器需要的核心文件
-        core_files = [
-            "license_system.py", 
-            "fingerprint_validator.py", 
-            "config.py", 
-            "logger.py",
-            "button_utils.py"  # 添加button_utils以防将来需要
-        ]
-        
+        core_files = ["license_system.py", "fingerprint_validator.py", "config.py", "logger.py"]
         for file_name in core_files:
-            src_file = current_dir / "core" / file_name
+            src_file = project_dir / "core" / file_name
             if src_file.exists():
                 shutil.copy2(src_file, core_dir)
-                print(f"复制核心文件: {file_name}")
-            else:
-                print(f"⚠️ 核心文件不存在，跳过: {file_name}")
         
-        # 创建许可证生成器专用的__init__.py（不导入app模块）
-        license_init_content = '''#!/usr/bin/env python3
+        # 创建简化的__init__.py
+        with open(core_dir / "__init__.py", 'w', encoding='utf-8') as f:
+            f.write('''#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-B站许可证生成器 - 核心模块包（简化版）
+核心模块包（许可证生成器专用）
 """
 
 from .license_system import LicenseSystem
@@ -346,41 +162,26 @@ from .config import Config
 from .logger import get_logger
 from .fingerprint_validator import FingerprintValidator
 
-__version__ = "2.0.0"
 __all__ = ['LicenseSystem', 'Config', 'get_logger', 'FingerprintValidator']
-'''
+''')
         
-        with open(core_dir / "__init__.py", 'w', encoding='utf-8') as f:
-            f.write(license_init_content)
-        print("创建许可证专用__init__.py")
+        # 复制图标
+        if (project_dir / "icons").exists():
+            shutil.copytree(project_dir / "icons", temp_dir / "icons")
         
-        os.chdir(temp_dir)
-        
-        # 复制图标文件到许可证生成器目录
-        if (current_dir / "icons").exists():
-            shutil.copytree(current_dir / "icons", temp_dir / "icons")
-            print("✅ 已复制图标文件到许可证生成器")
-        
-        # 使用系统Python构建许可证生成器
+        # 使用系统Python构建
         system_python = r"D:\Program Files (x86)\python\python.exe"
         
         cmd = [
             system_python, "-m", "PyInstaller",
             "--onefile",
             "--windowed",
-            "--name=BilibiliLicenseGenerator",
-            "--add-data=core;core",
-        ]
-        
-        # 添加图标（如果存在）
-        icon_file = temp_dir / "icons" / "app_icon.ico"
-        if icon_file.exists():
-            cmd.append(f"--icon={icon_file}")
-            cmd.append("--add-data=icons;icons")
-            print(f"✅ 许可证生成器已添加图标: {icon_file}")
-        
-        # 添加其他参数
-        additional_license_args = [
+            "--name=B站许可证生成器",
+            "--distpath=" + str(project_dir / "dist"),
+            "--workpath=" + str(temp_dir / "work"),
+            "--specpath=" + str(temp_dir),
+            "--icon=" + str(project_dir / "icons" / "icon_32x32.png"),
+            "--add-data=icons;icons",
             "--hidden-import=PyQt5.QtCore",
             "--hidden-import=PyQt5.QtGui",
             "--hidden-import=PyQt5.QtWidgets",
@@ -394,28 +195,100 @@ __all__ = ['LicenseSystem', 'Config', 'get_logger', 'FingerprintValidator']
             "main.py"
         ]
         
-        cmd.extend(additional_license_args)
-        
-        print("构建许可证生成器...")
+        print("📦 构建许可证生成器...")
         result = subprocess.run(cmd, cwd=str(temp_dir))
         
         if result.returncode == 0:
-            exe_file = temp_dir / "dist" / "BilibiliLicenseGenerator.exe"
+            exe_file = project_dir / "dist" / "B站许可证生成器.exe"
             if exe_file.exists():
-                target_dir = current_dir / "B站视频带货助手_完整EXE版"
-                if target_dir.exists():
-                    shutil.copy2(exe_file, target_dir / "B站许可证生成器.exe")
-                    
-                    # 创建许可证生成器启动脚本
-                    license_bat = '''@echo off
+                exe_size = exe_file.stat().st_size / (1024 * 1024)
+                print(f"✅ 许可证生成器构建成功！EXE大小: {exe_size:.1f} MB")
+                return True
+        
+        print("❌ 许可证生成器构建失败")
+        return False
+        
+    finally:
+        try:
+            shutil.rmtree(temp_dir)
+        except:
+            pass
+
+def create_exe_package():
+    """创建完整的EXE包目录"""
+    print("\n📦 创建EXE包...")
+    
+    project_dir = Path(__file__).parent.parent
+    dist_dir = project_dir / "dist"
+    package_dir = project_dir / "B站视频带货助手_EXE版"
+    
+    # 清理旧包
+    if package_dir.exists():
+        shutil.rmtree(package_dir)
+    package_dir.mkdir()
+    
+    # 复制EXE文件
+    for exe_name in ["B站视频助手.exe", "B站许可证生成器.exe"]:
+        exe_file = dist_dir / exe_name
+        if exe_file.exists():
+            shutil.copy2(exe_file, package_dir)
+            print(f"✅ 复制 {exe_name}")
+    
+    # 创建必要目录
+    (package_dir / "videos").mkdir()
+    (package_dir / "logs").mkdir()
+    
+    # 复制ms-playwright浏览器
+    if (project_dir / "ms-playwright").exists():
+        shutil.copytree(project_dir / "ms-playwright", package_dir / "ms-playwright")
+        print("✅ 复制ms-playwright浏览器")
+    
+    # 复制ChromeDriver
+    if (project_dir / "drivers").exists():
+        shutil.copytree(project_dir / "drivers", package_dir / "drivers")
+        print("✅ 复制ChromeDriver")
+    
+    # 创建启动脚本
+    start_bat = '''@echo off
+chcp 65001 >nul
+title B站视频助手 v2.0
+color 0A
+
+echo.
+echo ========================================
+echo   B站视频助手 v2.0 纯净EXE版
+echo ========================================
+echo.
+
+if not exist "B站视频助手.exe" (
+    echo [错误] 找不到主程序文件
+    pause
+    exit /b 1
+)
+
+echo [信息] 启动程序...
+echo 首次运行可能需要初始化
+echo.
+
+start "" "B站视频助手.exe"
+
+echo [成功] 程序已启动
+timeout /t 2 >nul
+'''
+    
+    with open(package_dir / "启动程序.bat", 'w', encoding='utf-8') as f:
+        f.write(start_bat)
+    
+    # 创建许可证生成器启动脚本
+    license_bat = '''@echo off
 chcp 65001 >nul
 title B站许可证生成器
 color 0B
 
 echo.
-echo =========================================
-echo    B站许可证生成器 v2.0
-echo =========================================
+echo ========================================
+echo   B站许可证生成器 v2.0
+echo ========================================
 echo.
 
 if not exist "B站许可证生成器.exe" (
@@ -430,40 +303,89 @@ start "" "B站许可证生成器.exe"
 echo [成功] 许可证生成器已启动
 timeout /t 2 >nul
 '''
-                    with open(target_dir / "启动许可证生成器.bat", 'w', encoding='utf-8') as f:
-                        f.write(license_bat)
-                    
-                    print("许可证生成器EXE创建成功")
-                    return True
-        
-        print("许可证生成器构建失败")
-        return False
-        
-    finally:
-        try:
-            os.chdir(Path(__file__).parent)
-            shutil.rmtree(temp_dir)
-        except:
-            pass
+    
+    with open(package_dir / "启动许可证生成器.bat", 'w', encoding='utf-8') as f:
+        f.write(license_bat)
+    
+    # 创建使用说明
+    readme = '''# B站视频助手 v2.0 纯净EXE版
+
+## 快速开始
+1. 双击"启动程序.bat"启动程序
+2. 或直接双击"B站视频助手.exe"
+3. 在"账号管理"页面添加B站账号
+4. 将视频文件放入videos文件夹开始上传
+
+## 版本特点
+- ✅ 纯净EXE文件，无需安装Python
+- ✅ 独立浏览器环境，不影响系统浏览器
+- ✅ 完整功能，支持批量上传和账号管理
+- ✅ 包含许可证生成器工具
+
+## 文件结构
+├── B站视频助手.exe        # 主程序
+├── B站许可证生成器.exe    # 许可证工具
+├── ms-playwright/        # 浏览器环境
+├── drivers/             # ChromeDriver
+├── videos/              # 视频文件夹
+└── logs/                # 日志文件夹
+
+## 系统要求
+- Windows 10/11（64位）
+- 至少4GB可用内存
+- 网络连接
+
+## 文件命名规范
+视频文件命名格式：商品ID----商品名称.mp4
+例如：12345678----测试商品.mp4
+
+## 故障排除
+1. 如遇到启动问题，请检查Windows Defender设置
+2. 确保网络连接正常
+3. 首次运行需要较长初始化时间
+
+版本：v2.0.0 纯净EXE版
+构建日期：''' + str(__import__('datetime').datetime.now().strftime('%Y-%m-%d'))
+    
+    with open(package_dir / "使用说明.txt", 'w', encoding='utf-8') as f:
+        f.write(readme)
+    
+    print(f"✅ EXE包创建完成: {package_dir}")
 
 if __name__ == "__main__":
+    print("🚀 B站视频助手 EXE构建器")
+    print("=" * 50)
+    
     # 构建主程序
-    main_success = build_simple_exe()
+    main_success = build_main_exe()
     
     # 构建许可证生成器
     license_success = build_license_exe()
     
-    print("\n" + "="*50)
-    print("构建完成:")
-    print(f"主程序: {'成功' if main_success else '失败'}")
-    print(f"许可证生成器: {'成功' if license_success else '失败'}")
+    if main_success and license_success:
+        # 创建完整包
+        create_exe_package()
+        
+        print("\n" + "=" * 50)
+        print("🎉 构建完成！")
+        print("✅ 主程序EXE构建成功")
+        print("✅ 许可证生成器EXE构建成功")
+        print("✅ 完整EXE包已准备就绪")
+        print("\n特点：")
+        print("- 纯净EXE文件，无源码泄露")
+        print("- 独立运行，无需Python环境")
+        print("- 包含完整浏览器和驱动")
+        print("=" * 50)
+    else:
+        print("\n❌ 构建失败!")
+        print(f"主程序: {'成功' if main_success else '失败'}")
+        print(f"许可证生成器: {'成功' if license_success else '失败'}")
     
-    if main_success:
-        print("\n完整EXE版本已准备就绪!")
-        print("包含内容:")
-        print("- B站视频带货助手.exe (主程序)")
-        if license_success:
-            print("- B站许可证生成器.exe (许可证工具)")
-        print("- 内置ms-playwright浏览器")
-        print("- 完整使用说明")
-    print("="*50) 
+    # 清理dist目录
+    try:
+        dist_dir = Path(__file__).parent.parent / "dist"
+        if dist_dir.exists():
+            shutil.rmtree(dist_dir)
+            print("🧹 临时文件已清理")
+    except:
+        pass 

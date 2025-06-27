@@ -1,5 +1,5 @@
 {
-  "video_directory": "./videos",
+  "video_directory": "videos",
   "upload_settings": {
     "title_template": "{filename}",
     "description": "精彩视频内容，欢迎观看！",
@@ -10,72 +10,61 @@
     ],
     "category": "生活"
   },
-  "upload_threads": 3,
-  "delay_between_uploads": 10,
   "browser_settings": {
     "headless": false,
     "window_size": "1920,1080"
   },
-  "proxies": [
-    {
-      "type": "socks5",
-      "host": "218.95.39.66",
-      "port": 12359,
-      "username": "",
-      "password": "",
-      "status": "可用",
-      "speed": 1677,
-      "last_test": 1750518502,
-      "created_at": 1750518500.9470725,
-      "duration_minutes": 9,
-      "expire_at": 1750519040.9470725,
-      "assigned_to": "1",
-      "is_in_use": true,
-      "priority": 1.0,
-      "cost_efficiency": 1.0915384615384616,
-      "load_factor": 0.0,
-      "health_score": 0.7883333333333333,
-      "location": "",
-      "isp": "移动",
-      "tags": [
-        "中速",
-        "良好",
-        "稳定"
-      ],
-      "total_usage_time": 0.0,
-      "metrics": {
-        "success_count": 1,
-        "fail_count": 0,
-        "timeout_count": 0,
-        "consecutive_failures": 0,
-        "last_success_time": 1750518502.6325357,
-        "response_times": [
-          1677
-        ],
-        "bandwidth_samples": []
-      }
-    }
-  ],
   "ui_settings": {
-    "concurrent_browsers": "2",
-    "videos_per_account": "4",
-    "video_directory": "D:/写的程序/bilibili-video-helper/videos",
+    "concurrent_browsers": "6",
+    "videos_per_account": "10",
+    "video_directory": "D:/bili/videos",
     "account_selections": {
-      "1": false,
-      "2": false,
-      "测试1": false,
-      "测试2": true,
-      "测试3": false,
-      "测试4": false,
-      "测试5": false,
-      "测试6": false,
-      "11111": false,
-      "11111111111": false,
-      "1111": false,
-      "22222": false,
-      "111": false,
-      "16603798970": false
+      "18834405696": true,
+      "13276490532": true,
+      "15629605545": false,
+      "13135906264": false,
+      "18340310496": true,
+      "13369160297": true,
+      "18551909337": true,
+      "13859332426": true,
+      "18922778447": true,
+      "15291888844": true,
+      "18845583576": true,
+      "18099356903": true,
+      "15813843983": true,
+      "17867427237": true,
+      "18948449572": true,
+      "18805065125": true,
+      "15671738230": true,
+      "18998129210\n": true,
+      "13137100724\n": true,
+      "17687115930\n": true,
+      "16762768661": true,
+      "15933329774": true,
+      "19933564770": true,
+      "15135750499": true,
+      "13379165949": true,
+      "15977785220": true,
+      "19861902601": true,
+      "18626643712": true,
+      "15157453117": true,
+      "15075202056": true,
+      "19073113305": true,
+      "19535915301": true,
+      "13198135639": true,
+      "15987663613": true,
+      "15671501229": true,
+      "17727118318": true,
+      "15127026719": true,
+      "13360730180": true,
+      "15712077047": true,
+      "18336295441": true,
+      "13824303130": true,
+      "18737179491": true
     },
-    "success_wait_time": 5
+    "chrome_path": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+    "publish_delay": 10,
+    "page_delay": 5,
+    "success_wait_time": 26
   }
 }

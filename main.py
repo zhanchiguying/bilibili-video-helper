@@ -13,20 +13,22 @@ from PyQt5.QtCore import Qt
 # 添加当前目录到路径
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+def is_frozen():
+    """检测是否在PyInstaller打包的EXE环境中运行"""
+    return getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS')
+
 try:
     from core.app import BilibiliUploaderApp
     from core.config import Config  
     from core.logger import get_logger
     
-    # 🎯 使用importlib直接导入gui.py文件，避免与gui模块冲突
-    import importlib.util
-    spec = importlib.util.spec_from_file_location("gui_main", "gui.py")
-    gui_main = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(gui_main)
-    MainWindow = gui_main.MainWindow
-    
+    # 🎯 简化导入：直接从gui模块导入MainWindow
+    from gui import MainWindow
+
 except ImportError as e:
     print(f"导入模块失败: {e}")
+    import traceback
+    traceback.print_exc()
     sys.exit(1)
 
 def check_dependencies():
