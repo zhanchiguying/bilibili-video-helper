@@ -39,6 +39,8 @@ class Logger:
         if cls._instance is None:
             cls._instance = super().__new__(cls)
             cls._instance._initialized = False
+            # 🔧 修复：在创建实例时就设置基本属性
+            cls._instance.logger = logging.getLogger("BilibiliUploader")
         return cls._instance
     
     def __init__(self):
@@ -47,10 +49,9 @@ class Logger:
         
         self._initialized = True
         self.setup_logging()
-        self.logger = logging.getLogger("BilibiliUploader")
     
     def setup_logging(self):
-        """设置日志系统"""
+        """设置日志系统 - 优化版：减少日志产生量"""
         # 创建日志目录
         os.makedirs(Config.LOGS_DIR, exist_ok=True)
         
@@ -65,10 +66,22 @@ class Logger:
         console_handler.setLevel(logging.INFO)
         console_handler.setFormatter(formatter)
         
-        # 文件处理器
+        # 🔧 优化：使用轮转文件处理器，防止单文件过大
         log_file = os.path.join(Config.LOGS_DIR, f"{datetime.now().strftime('%Y%m%d')}.log")
-        file_handler = logging.FileHandler(log_file, encoding='utf-8')
-        file_handler.setLevel(logging.DEBUG)
+        try:
+            from logging.handlers import RotatingFileHandler
+            file_handler = RotatingFileHandler(
+                log_file, 
+                maxBytes=50*1024*1024,  # 50MB轮转
+                backupCount=3, 
+                encoding='utf-8'
+            )
+            file_handler.setLevel(logging.WARNING)  # 🔧 文件只记录WARNING及以上
+        except ImportError:
+            # 如果没有RotatingFileHandler，回退到普通FileHandler
+            file_handler = logging.FileHandler(log_file, encoding='utf-8')
+            file_handler.setLevel(logging.WARNING)  # 🔧 文件只记录WARNING及以上
+        
         file_handler.setFormatter(formatter)
         
         # GUI处理器
@@ -79,9 +92,9 @@ class Logger:
         gui_handler.setLevel(logging.INFO)
         gui_handler.setFormatter(logging.Formatter('%(message)s'))
         
-        # 配置根logger
+        # 🔧 优化：配置根logger级别为INFO（生产环境）
         root_logger = logging.getLogger()
-        root_logger.setLevel(logging.DEBUG)
+        root_logger.setLevel(logging.INFO)  # 从DEBUG改为INFO
         
         # 清除现有处理器
         for handler in root_logger.handlers[:]:
@@ -91,6 +104,31 @@ class Logger:
         root_logger.addHandler(console_handler)
         root_logger.addHandler(file_handler)
         root_logger.addHandler(gui_handler)
+        
+        # 🔧 新增：禁用第三方库的详细日志，防止日志爆炸
+        self._configure_third_party_logging()
+    
+    def _configure_third_party_logging(self):
+        """配置第三方库日志级别，防止日志爆炸"""
+        # 禁用requests库的详细日志
+        logging.getLogger('requests').setLevel(logging.WARNING)
+        logging.getLogger('requests.packages.urllib3').setLevel(logging.WARNING)
+        
+        # 禁用urllib3的详细日志
+        logging.getLogger('urllib3').setLevel(logging.WARNING)
+        logging.getLogger('urllib3.connectionpool').setLevel(logging.WARNING)
+        
+        # 禁用selenium的详细日志
+        logging.getLogger('selenium').setLevel(logging.WARNING)
+        logging.getLogger('selenium.webdriver').setLevel(logging.WARNING)
+        logging.getLogger('selenium.webdriver.remote').setLevel(logging.WARNING)
+        
+        # 禁用其他可能产生大量日志的库
+        logging.getLogger('asyncio').setLevel(logging.WARNING)
+        logging.getLogger('websockets').setLevel(logging.WARNING)
+        
+        # 记录配置完成
+        self.info("🔧 第三方库日志级别已优化，减少日志产生量")
     
     @property
     def signal_emitter(self):
@@ -110,8 +148,10 @@ class Logger:
         self.logger.warning(message)
     
     def debug(self, message: str):
-        """调试日志"""
-        self.logger.debug(message)
+        """调试日志 - 优化：只在必要时记录"""
+        # 🔧 优化：DEBUG信息只在开发模式下记录
+        if os.getenv('BILIBILI_DEBUG', '').lower() in ('1', 'true', 'yes'):
+            self.logger.debug(message)
 
 # 全局日志实例
 _logger = None

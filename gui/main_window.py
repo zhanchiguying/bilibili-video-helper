@@ -1336,23 +1336,20 @@ class MainWindow(QMainWindow):
         return log_tab.create_widget()
     
     def setup_browser_status_timer(self):
-        """🎯 简化版浏览器状态监控 - 防止线程问题"""
+        """🔧 优化版浏览器状态监控 - 禁用GUI重复检查，统一使用核心监控器"""
         try:
-            from PyQt5.QtCore import QTimer
+            # 🔧 优化：移除GUI层面的重复检查，避免双重HTTP请求
+            # 核心监控器 (browser_status_monitor.py) 已经每30秒检查一次所有账号
+            # GUI层面的额外检查是不必要的，会造成资源浪费
             
-            # 🎯 延长检查间隔到60秒，减少资源消耗和线程冲突
-            self.browser_status_timer = QTimer()
-            self.browser_status_timer.timeout.connect(self.update_browser_status_async)
-            self.browser_status_timer.start(60000)  # 改为每60秒检查一次
-            
-            # 初始化缓存
+            # 初始化缓存（保持兼容性）
             if not hasattr(self, '_browser_status_cache'):
                 self._browser_status_cache = {}
             
-            self.log_message("🔄 浏览器状态监控已启动 (60秒间隔)", "INFO")
+            self.log_message("🔧 浏览器状态监控已优化 (使用核心监控器，避免重复检查)", "INFO")
             
         except Exception as e:
-            self.log_message(f"⚠️ 浏览器状态监控启动失败: {e}", "WARNING")
+            self.log_message(f"⚠️ 浏览器状态监控设置失败: {e}", "WARNING")
     
     def update_browser_status_async(self):
         """🎯 增强版：使用异步任务队列优化浏览器状态检测"""
@@ -1448,7 +1445,9 @@ class MainWindow(QMainWindow):
                 try:
                     is_active = self.is_browser_active(username)
                     self.on_browser_status_checked(username, is_active)
-                except:
+                except Exception as e:
+                    # 🔧 改进：记录异常详情而不是静默忽略
+                    self.log_message(f"⚠️ 检查账号 {username} 浏览器状态失败: {type(e).__name__}: {e}", "WARNING")
                     self.on_browser_status_checked(username, False)
             
         except Exception as e:
@@ -2140,7 +2139,7 @@ class MainWindow(QMainWindow):
             self.refresh_video_list()
     
     def refresh_video_list(self):
-        """🚀 优化版视频列表刷新 - 支持缓存和异步处理"""
+        """🔧 优化版视频列表刷新 - 支持分页加载，解决大量文件内存问题"""
         if not hasattr(self, 'video_list'):
             return
             
@@ -2151,36 +2150,37 @@ class MainWindow(QMainWindow):
             return
         
         try:
-            # 🚀 尝试使用缓存
-            cache_key = f"video_scan_{directory}_{int(os.path.getmtime(directory))}"
-            cached_result = None
-            
-            if hasattr(self, 'cache_manager') and self.cache_manager:
-                cached_result = self.cache_manager.get(cache_key)
-                if cached_result:
-                    self.log_message("✅ 使用缓存的视频列表", "INFO")
-                    self._apply_cached_video_list(cached_result)
-                    return
+            # 🔧 新增：分页参数
+            max_files_per_page = 200  # 每页最多显示200个文件
+            current_page = getattr(self, '_current_video_page', 0)
             
             # 显示加载状态
             if hasattr(self, 'video_stats_label'):
                 self.video_stats_label.setText("📊 正在扫描文件...")
             
-            # 获取视频文件
-            video_files = self.get_video_files(directory)
+            # 获取所有视频文件
+            all_video_files = self.get_video_files(directory)
+            total_files = len(all_video_files)
+            
+            # 🔧 分页处理：只加载当前页的文件
+            start_index = current_page * max_files_per_page
+            end_index = min(start_index + max_files_per_page, total_files)
+            current_page_files = all_video_files[start_index:end_index]
             
             # 暂时断开信号
             self.video_list.blockSignals(True)
             self.video_list.clear()
             
-            total_size = 0
+            # 🔧 优化：只计算当前页文件的大小，避免全量计算
+            page_total_size = 0
             display_items = []
             
-            for file_path in video_files:
+            for file_path in current_page_files:
                 filename = os.path.basename(file_path)
+                # 🔧 优化：延迟加载文件大小，只显示文件名
                 try:
                     file_size = os.path.getsize(file_path)
-                    total_size += file_size
+                    page_total_size += file_size
                     size_mb = file_size / (1024 * 1024)
                     display_text = f"{filename} ({size_mb:.1f}MB)"
                 except:
@@ -2195,21 +2195,20 @@ class MainWindow(QMainWindow):
             # 重新启用信号
             self.video_list.blockSignals(False)
             
-            # 🚀 缓存结果（5分钟有效期）
-            if hasattr(self, 'cache_manager') and self.cache_manager:
-                cache_data = {
-                    'directory': directory,
-                    'display_items': display_items,
-                    'total_size': total_size,
-                    'file_count': len(video_files)
-                }
-                self.cache_manager.set(cache_key, cache_data, ttl=300)
+            # 🔧 计算分页信息
+            total_pages = (total_files + max_files_per_page - 1) // max_files_per_page if total_files > 0 else 1
             
             # 更新统计信息
             if hasattr(self, 'video_stats_label'):
-                total_size_mb = total_size / (1024 * 1024) if total_size > 0 else 0
-                stats_text = f"📊 文件统计: {len(video_files)} 个文件, 总大小 {total_size_mb:.1f}MB"
+                page_size_mb = page_total_size / (1024 * 1024) if page_total_size > 0 else 0
+                if total_pages > 1:
+                    stats_text = f"📊 第{current_page + 1}/{total_pages}页 | 当前页: {len(current_page_files)} 个文件 ({page_size_mb:.1f}MB) | 总计: {total_files} 个文件"
+                else:
+                    stats_text = f"📊 文件统计: {total_files} 个文件, 总大小 {page_size_mb:.1f}MB"
                 self.video_stats_label.setText(stats_text)
+            
+            # 🔧 更新分页按钮状态
+            self._update_video_pagination_buttons(current_page, total_pages)
                 
         except Exception as e:
             if hasattr(self, 'video_stats_label'):
@@ -2478,15 +2477,15 @@ class MainWindow(QMainWindow):
             self.log_message("⏸️ 自动刷新已禁用", "INFO")
     
     def setup_file_monitor(self):
-        """设置文件监控"""
-        # 简单的定时器方案，每3秒检查一次
+        """设置文件监控 - 🔧 优化版：延长间隔减少资源消耗"""
+        # 🔧 优化：延长检查间隔，减少文件系统调用
         if not hasattr(self, 'file_monitor_timer'):
             from PyQt5.QtCore import QTimer
             self.file_monitor_timer = QTimer()
             self.file_monitor_timer.timeout.connect(self.check_file_changes)
             
         if hasattr(self, 'auto_refresh_check') and self.auto_refresh_check.isChecked():
-            self.file_monitor_timer.start(10000)  # 10秒间隔（优化性能）
+            self.file_monitor_timer.start(60000)  # 🔧 从10秒延长到60秒
     
     def stop_file_monitor(self):
         """停止文件监控"""
@@ -4049,6 +4048,97 @@ class MainWindow(QMainWindow):
                 self.account_stats_label.setText(stats_text)
             except:
                 pass
+
+    def _update_video_pagination_buttons(self, current_page, total_pages):
+        """更新视频文件分页按钮状态"""
+        # 🔧 新增：视频文件分页控制
+        if not hasattr(self, '_video_pagination_created'):
+            self._create_video_pagination_buttons()
+            self._video_pagination_created = True
+        
+        # 更新按钮状态
+        if hasattr(self, '_video_prev_btn'):
+            self._video_prev_btn.setEnabled(current_page > 0)
+        
+        if hasattr(self, '_video_next_btn'):
+            self._video_next_btn.setEnabled(current_page < total_pages - 1)
+        
+        # 更新页码信息
+        if hasattr(self, '_video_page_label'):
+            if total_pages > 1:
+                self._video_page_label.setText(f"第 {current_page + 1}/{total_pages} 页")
+                self._video_page_label.setVisible(True)
+            else:
+                self._video_page_label.setVisible(False)
+        
+        # 显示/隐藏分页控件
+        show_pagination = total_pages > 1
+        if hasattr(self, '_video_pagination_widget'):
+            self._video_pagination_widget.setVisible(show_pagination)
+    
+    def _create_video_pagination_buttons(self):
+        """创建视频文件分页控制按钮"""
+        try:
+            from PyQt5.QtWidgets import QWidget, QHBoxLayout, QPushButton, QLabel
+            from PyQt5.QtCore import Qt
+            
+            # 创建分页控件容器
+            self._video_pagination_widget = QWidget()
+            pagination_layout = QHBoxLayout()
+            pagination_layout.setContentsMargins(5, 5, 5, 5)
+            
+            # 上一页按钮
+            self._video_prev_btn = QPushButton("◀ 上一页")
+            self._video_prev_btn.setMaximumWidth(80)
+            self._video_prev_btn.clicked.connect(self._video_prev_page)
+            pagination_layout.addWidget(self._video_prev_btn)
+            
+            # 页码信息
+            self._video_page_label = QLabel("第 1/1 页")
+            self._video_page_label.setAlignment(Qt.AlignCenter)
+            self._video_page_label.setMinimumWidth(80)
+            pagination_layout.addWidget(self._video_page_label)
+            
+            # 下一页按钮
+            self._video_next_btn = QPushButton("下一页 ▶")
+            self._video_next_btn.setMaximumWidth(80)
+            self._video_next_btn.clicked.connect(self._video_next_page)
+            pagination_layout.addWidget(self._video_next_btn)
+            
+            pagination_layout.addStretch()
+            self._video_pagination_widget.setLayout(pagination_layout)
+            
+            # 🔧 将分页控件添加到视频列表下方
+            if hasattr(self, 'video_list') and self.video_list.parent():
+                parent_layout = self.video_list.parent().layout()
+                if parent_layout:
+                    # 找到video_list的位置，在其后插入分页控件
+                    for i in range(parent_layout.count()):
+                        widget_item = parent_layout.itemAt(i)
+                        if widget_item and widget_item.widget() == self.video_list:
+                            parent_layout.insertWidget(i + 1, self._video_pagination_widget)
+                            break
+            
+            # 初始状态隐藏
+            self._video_pagination_widget.setVisible(False)
+            
+        except Exception as e:
+            self.log_message(f"⚠️ 创建视频分页控件失败: {e}", "WARNING")
+    
+    def _video_prev_page(self):
+        """视频文件上一页"""
+        current_page = getattr(self, '_current_video_page', 0)
+        if current_page > 0:
+            self._current_video_page = current_page - 1
+            self.refresh_video_list()
+            self.log_message(f"📖 切换到第 {self._current_video_page + 1} 页", "INFO")
+    
+    def _video_next_page(self):
+        """视频文件下一页"""
+        current_page = getattr(self, '_current_video_page', 0)
+        self._current_video_page = current_page + 1
+        self.refresh_video_list()
+        self.log_message(f"📖 切换到第 {self._current_video_page + 1} 页", "INFO")
 
 
 

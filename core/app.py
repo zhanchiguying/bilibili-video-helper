@@ -114,6 +114,9 @@ class BrowserManager:
         from .browser_detector import get_browser_detector
         self.detector = get_browser_detector()
         atexit.register(self.cleanup_all)
+        
+        # 🔧 启动定期资源清理
+        self.setup_periodic_cleanup()
     
     def _get_account_debug_port(self, account_name: str) -> int:
         """简化的端口分配策略 - 账号序号+基础端口"""
@@ -638,45 +641,91 @@ class BrowserManager:
             self.logger.error(f"关闭浏览器失败: {e}")
     
     def cleanup_all(self):
-        """清理程序创建的浏览器实例 - 方案A：进程检查法"""
+        """🔧 强化的资源清理机制 - 确保资源正确释放"""
         if self.drivers:
-            self.logger.info(f"清理 {len(self.drivers)} 个程序创建的Chrome浏览器实例")
+            self.logger.info(f"🔧 开始强化清理 {len(self.drivers)} 个浏览器实例")
             
+            # 🔧 强化清理：更积极的资源释放策略
             for driver in self.drivers[:]:
                 try:
-                    # 方案A：检查Chrome进程是否还存在
-                    if hasattr(driver, 'service') and hasattr(driver.service, 'process') and driver.service.process:
-                        pid = driver.service.process.pid
-                        
-                        # 使用系统命令检查进程是否存在
-                        import subprocess
-                        try:
-                            result = subprocess.run(['tasklist', '/FI', f'PID eq {pid}'], 
-                                                  capture_output=True, text=True, timeout=2)
-                            if str(pid) in result.stdout:
-                                # 进程存在，正常关闭
-                                self.logger.debug(f"进程 {pid} 存在，正常关闭")
-                                driver.quit()
-                            else:
-                                # 进程不存在，直接跳过
-                                self.logger.debug(f"进程 {pid} 已结束，跳过清理")
-                        except (subprocess.TimeoutExpired, Exception):
-                            # 检查失败，直接跳过
-                            self.logger.debug(f"进程检查失败，跳过清理")
-                    else:
-                        # 没有进程信息，直接跳过
-                        self.logger.debug("无进程信息，跳过清理")
-                        
+                    if hasattr(driver, 'quit'):
+                        driver.quit()
+                        # 🔧 给浏览器更多时间清理资源
+                        import time
+                        time.sleep(0.5)
+                        self.logger.debug("✅ 浏览器实例已清理")
                 except Exception as e:
-                    # 任何异常都直接跳过
-                    self.logger.debug(f"浏览器清理跳过: {e}")
+                    self.logger.warning(f"⚠️ 浏览器清理警告: {e}")
+                    # 🔧 即使清理失败也要从列表中移除
                     pass
             
             # 清空列表
             self.drivers.clear()
-            self.logger.info("程序创建的浏览器实例已清理完成（进程检查法）")
-        
-        # 不再强制结束所有Chrome进程，保护用户的其他浏览器
+            
+            # 🔧 强制释放所有端口资源
+            with self._port_lock:
+                if self.account_ports:
+                    self.logger.info(f"🔧 释放 {len(self.account_ports)} 个端口资源")
+                    self.account_ports.clear()
+            
+            # 🔧 强制垃圾回收
+            import gc
+            gc.collect()
+            
+            self.logger.info("✅ 强化资源清理完成")
+        else:
+            self.logger.debug("🔧 无需清理浏览器实例")
+    
+    def setup_periodic_cleanup(self):
+        """🔧 新增：设置定期资源清理（每30分钟）"""
+        try:
+            import threading
+            import time
+            
+            def periodic_cleanup():
+                while True:
+                    time.sleep(30 * 60)  # 30分钟
+                    self._periodic_resource_cleanup()
+            
+            cleanup_thread = threading.Thread(target=periodic_cleanup, daemon=True)
+            cleanup_thread.start()
+            
+            self.logger.info("🔧 定期资源清理已启动 (30分钟间隔)")
+            
+        except Exception as e:
+            self.logger.warning(f"⚠️ 定期资源清理启动失败: {e}")
+    
+    def _periodic_resource_cleanup(self):
+        """🔧 新增：定期资源清理"""
+        try:
+            import gc
+            import psutil
+            
+            # 检查内存使用率
+            memory_percent = psutil.virtual_memory().percent
+            
+            if memory_percent > 80:
+                self.logger.warning(f"⚠️ 内存使用率过高: {memory_percent}%，执行强制清理")
+                
+                # 强制垃圾回收
+                gc.collect()
+                
+                # 检查是否有僵尸浏览器进程
+                active_drivers = len(self.drivers)
+                if active_drivers > 10:  # 如果浏览器实例过多
+                    self.logger.warning(f"⚠️ 浏览器实例过多: {active_drivers}，执行清理")
+                    self.cleanup_all()
+                
+                # 再次检查内存
+                new_memory_percent = psutil.virtual_memory().percent
+                self.logger.info(f"🔧 清理后内存使用率: {memory_percent}% -> {new_memory_percent}%")
+            else:
+                # 常规清理
+                gc.collect()
+                self.logger.debug(f"🔧 常规清理完成，内存使用率: {memory_percent}%")
+                
+        except Exception as e:
+            self.logger.error(f"❌ 定期资源清理失败: {e}")
 
     def show_port_allocation_info(self):
         """显示端口分配信息 - 便于调试"""

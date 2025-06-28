@@ -105,8 +105,8 @@ class BrowserStatusMonitor(QObject):
         self.logger.info("⏹️ 浏览器状态监控已停止")
     
     def _monitor_loop(self):
-        """监控主循环 - 每3秒检查一次所有绑定的端口"""
-        self.logger.info("🔍 浏览器状态监控循环开始")
+        """监控主循环 - 优化版：延长间隔并限制并发，减少资源消耗"""
+        self.logger.info("🔍 浏览器状态监控循环开始 (优化版)")
         
         while self.monitoring:
             try:
@@ -114,8 +114,31 @@ class BrowserStatusMonitor(QObject):
                     accounts_to_check = list(self.account_ports.items())
                     self.pending_updates.clear()  # 清空待更新列表
                 
-                # 批量检查所有账号状态
-                for account_name, devtools_port in accounts_to_check:
+                # 🔧 优化：限制每次检查的账号数量，避免资源耗尽
+                max_concurrent_checks = 5  # 每次最多检查5个账号
+                if len(accounts_to_check) > max_concurrent_checks:
+                    # 轮询检查：确保所有账号都能被检查到
+                    if not hasattr(self, '_check_offset'):
+                        self._check_offset = 0
+                    
+                    start_idx = self._check_offset
+                    end_idx = min(start_idx + max_concurrent_checks, len(accounts_to_check))
+                    
+                    # 如果到达末尾，从头开始
+                    if end_idx >= len(accounts_to_check):
+                        current_batch = accounts_to_check[start_idx:] + accounts_to_check[:max_concurrent_checks - (len(accounts_to_check) - start_idx)]
+                        self._check_offset = max_concurrent_checks - (len(accounts_to_check) - start_idx)
+                    else:
+                        current_batch = accounts_to_check[start_idx:end_idx]
+                        self._check_offset = end_idx
+                    
+                    self.logger.debug(f"🔍 分批检查账号: {len(current_batch)}/{len(accounts_to_check)} (偏移: {start_idx})")
+                else:
+                    current_batch = accounts_to_check
+                    self.logger.debug(f"🔍 检查所有账号: {len(current_batch)}")
+                
+                # 批量检查选定的账号状态
+                for account_name, devtools_port in current_batch:
                     try:
                         # 检测端口状态
                         is_active = self._check_port_status(devtools_port)
@@ -134,9 +157,9 @@ class BrowserStatusMonitor(QObject):
                             status_text = "活跃" if is_active else "未活跃"
                             self.logger.info(f"🔄 浏览器状态变化: {account_name} -> {status_text} (端口: {devtools_port})")
                         else:
-                            # 保持状态，只记录调试信息（减少日志）
+                            # 🔧 优化：减少重复日志，只在DEBUG模式下记录
                             status_text = "活跃" if is_active else "未活跃"
-                            self.logger.debug(f"🔍 浏览器状态检查: {account_name} -> {status_text} (端口: {devtools_port})")
+                            self.logger.debug(f"🔍 浏览器状态保持: {account_name} -> {status_text} (端口: {devtools_port})")
                             
                     except Exception as e:
                         self.logger.error(f"检查账号 {account_name} 端口 {devtools_port} 时异常: {e}")
@@ -148,20 +171,20 @@ class BrowserStatusMonitor(QObject):
                             self.browser_status_changed.emit(account_name, is_active)
                         self.logger.info(f"📊 批量更新 {len(self.pending_updates)} 个账号状态")
                 
-                # 每10秒检查一次（优化性能）
-                time.sleep(10)
+                # 🔧 优化：延长检查间隔到30秒，减少HTTP请求频率
+                time.sleep(30)  # 从10秒改为30秒
                 
             except Exception as e:
                 self.logger.error(f"浏览器状态监控循环异常: {e}")
-                time.sleep(5)
+                time.sleep(10)  # 异常时仍使用较短间隔重试
         
         self.logger.info("🔍 浏览器状态监控循环结束")
     
     def _check_port_status(self, port: int) -> bool:
-        """检查DevTools端口状态 - 简单直接"""
+        """检查DevTools端口状态 - 优化版：更快的超时设置"""
         try:
-            # 只检查HTTP连通性，超时2秒
-            response = requests.get(f'http://127.0.0.1:{port}/json', timeout=2)
+            # 🔧 优化：缩短超时时间，减少等待
+            response = requests.get(f'http://127.0.0.1:{port}/json', timeout=1)  # 从2秒改为1秒
             
             # 只要能连接成功就认为活跃
             if response.status_code == 200:
@@ -175,8 +198,9 @@ class BrowserStatusMonitor(QObject):
         except requests.exceptions.Timeout:
             # 超时 = 未活跃
             return False
-        except Exception:
-            # 其他异常 = 未活跃
+        except Exception as e:
+            # 🔧 改进：记录异常详情而不是静默忽略
+            self.logger.debug(f"端口 {port} 检查异常: {type(e).__name__}: {e}")
             return False
     
     def force_check_all(self):
