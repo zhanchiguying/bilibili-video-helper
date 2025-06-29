@@ -40,6 +40,14 @@ class LogTab:
         widget.setLayout(layout)
         return widget
     
+    def _toggle_verbose_logging(self, enabled):
+        """切换详细日志模式"""
+        self.main_window._verbose_logging = enabled
+        if enabled:
+            self.main_window.log_message("✅ 详细日志模式已开启", "INFO")
+        else:
+            self.main_window.log_message("ℹ️ 详细日志模式已关闭，只显示重要信息", "INFO")
+    
     def _create_log_controls(self) -> QHBoxLayout:
         """创建日志控制区域"""
         log_control = QHBoxLayout()
@@ -63,6 +71,12 @@ class LogTab:
         auto_scroll_check.setChecked(True)
         auto_scroll_check.toggled.connect(self.main_window.toggle_auto_scroll)
         log_control.addWidget(auto_scroll_check)
+        
+        # 详细日志
+        verbose_check = QCheckBox("详细日志")
+        verbose_check.setChecked(False)
+        verbose_check.toggled.connect(self._toggle_verbose_logging)
+        log_control.addWidget(verbose_check)
         
         # 清空和保存
         clear_btn = QPushButton("清空")

@@ -269,7 +269,7 @@ class BatchUploadThread(QThread):
             return {}
     
     def save_uploaded_videos(self):
-        """保存已上传视频MD5记录"""
+        """保存已上传视频MD5记录 - 优化版：添加缓存清除"""
         try:
             data = {
                 "uploaded_videos": self.uploaded_videos_md5,
@@ -287,6 +287,14 @@ class BatchUploadThread(QThread):
             }
             with open('uploaded_videos.json', 'w', encoding='utf-8') as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
+                
+            # 🎯 关键修复：保存文件后通知service层清除缓存
+            try:
+                from services.account_service import AccountService
+                AccountService.clear_progress_cache()
+            except:
+                pass  # 忽略清除缓存失败
+                
         except Exception as e:
             print(f"保存上传记录失败: {e}")
     
@@ -310,7 +318,7 @@ class BatchUploadThread(QThread):
         return md5_hash in self.uploaded_videos_md5
     
     def mark_video_uploaded(self, file_path, account, product_id):
-        """标记视频已上传"""
+        """标记视频已上传 - 优化版：添加缓存清除"""
         md5_hash = self.get_file_md5(file_path)
         if md5_hash:
             from datetime import datetime
@@ -322,7 +330,26 @@ class BatchUploadThread(QThread):
                 "deleted": False
             }
             self.save_uploaded_videos()
-    
+            
+                        # 🎯 关键修复：保存文件后立即清除进度缓存
+            self._clear_progress_cache()
+
+    def _clear_progress_cache(self):
+        """清除进度缓存 - 确保数据一致性"""
+        try:
+            # 清除UI层缓存
+            if hasattr(self, '_progress_cache'):
+                self._progress_cache.clear()
+                self._progress_cache_time.clear()
+            
+            # 清除service层缓存
+            if hasattr(self, 'account_service') and self.account_service:
+                from services.account_service import AccountService
+                AccountService.clear_progress_cache()
+                
+        except Exception as e:
+            self.log_message(f"⚠️ 清除进度缓存失败: {e}", "WARNING")
+
     def delete_video_file(self, file_path):
         """删除视频文件 - 修复MD5记录更新"""
         try:
@@ -336,6 +363,9 @@ class BatchUploadThread(QThread):
             if md5_hash and md5_hash in self.uploaded_videos_md5:
                 self.uploaded_videos_md5[md5_hash]["deleted"] = True
                 self.save_uploaded_videos()
+                
+                # 🎯 关键修复：文件删除后清除进度缓存
+                self._clear_progress_cache()
             
             # 🎯 文件删除后发出信号，通知刷新文件列表
             self.file_deleted.emit(file_path)
@@ -351,12 +381,26 @@ class BatchUploadThread(QThread):
     def run(self):
         """执行批量上传 - 动态浏览器池管理"""
         try:
+            # 🎯 增强异常处理：捕获所有可能的异常，防止程序意外退出
             from core.bilibili_product_manager import get_product_manager
             from queue import Queue
             
             product_manager = get_product_manager()
             
             self.upload_status.emit("🚀 开始批量上传流程...")
+            
+            # 🎯 添加内存监控（可选）
+            try:
+                import psutil
+                process = psutil.Process()
+                initial_memory = process.memory_info().rss / 1024 / 1024  # MB
+                self.upload_status.emit(f"📊 初始内存使用: {initial_memory:.1f}MB")
+            except ImportError:
+                # psutil不可用时的后备方案
+                initial_memory = 0
+                self.upload_status.emit("📊 内存监控不可用 (需要安装psutil)")
+            except Exception:
+                initial_memory = 0
             
             # 获取所有未上传的视频文件
             available_videos = []
@@ -646,12 +690,70 @@ class BatchUploadThread(QThread):
                         # 超时，继续等待
                         continue
             
+            # 🎯 输出内存使用情况
+            try:
+                if 'process' in locals() and initial_memory > 0:
+                    final_memory = process.memory_info().rss / 1024 / 1024  # MB
+                    memory_used = final_memory - initial_memory
+                    self.upload_status.emit(f"📊 最终内存使用: {final_memory:.1f}MB (增加: {memory_used:+.1f}MB)")
+            except:
+                pass
+            
             # 输出最终结果
             message = f"批量上传完成: 处理 {processed_videos} 个视频, 成功 {successful_uploads} 个, 删除 {deleted_videos} 个"
             self.upload_finished.emit(True, message)
             
+        except MemoryError as e:
+            # 🎯 内存不足的特殊处理
+            error_msg = f"❌ 内存不足，批量上传中止: {str(e)}"
+            self.upload_status.emit(error_msg)
+            self.upload_finished.emit(False, error_msg)
+            
+        except KeyboardInterrupt:
+            # 🎯 用户中断的处理
+            self.upload_status.emit("⏹️ 用户中断批量上传")
+            self.upload_finished.emit(False, "用户中断上传")
+            
         except Exception as e:
-            self.upload_finished.emit(False, f"批量上传异常: {str(e)}")
+            # 🎯 增强异常处理：记录详细错误信息，防止程序崩溃
+            import traceback
+            error_msg = f"批量上传异常: {str(e)}"
+            detailed_error = f"异常详情:\n{traceback.format_exc()}"
+            
+            self.upload_status.emit(f"❌ {error_msg}")
+            self.upload_status.emit(f"🔍 {detailed_error}")
+            self.upload_finished.emit(False, error_msg)
+            
+            # 🎯 记录内存状态（如果可能）
+            try:
+                if 'process' in locals() and initial_memory > 0:
+                    current_memory = process.memory_info().rss / 1024 / 1024
+                    self.upload_status.emit(f"📊 异常时内存使用: {current_memory:.1f}MB")
+            except:
+                pass
+                
+        finally:
+            # 🎯 确保线程退出时的清理工作
+            try:
+                self.upload_status.emit("🧹 正在清理批量上传资源...")
+                
+                # 清理浏览器实例
+                if 'active_browsers' in locals():
+                    for account, browser in active_browsers.items():
+                        try:
+                            browser.quit()
+                            self.upload_status.emit(f"🔒 已关闭 {account} 的浏览器")
+                        except:
+                            pass
+                
+                # 触发垃圾回收
+                import gc
+                gc.collect()
+                
+                self.upload_status.emit("✅ 批量上传资源清理完成")
+                
+            except Exception as cleanup_error:
+                self.upload_status.emit(f"⚠️ 清理资源时出错: {cleanup_error}")
     
     def perform_actual_upload(self, account_obj, browser, video_path, product_info):
         """执行实际上传逻辑"""
@@ -1015,9 +1117,19 @@ class PeriodicCheckWorker(QThread):
                 self.check_completed.emit(False, f"安全检查出错: {str(e)}")
                 
     def stop(self):
-        self.running = False
-        self.quit()
-        self.wait()
+        """🎯 安全停止许可证检查线程"""
+        try:
+            self.running = False
+            # 🎯 修复：不立即调用quit()，先等待线程自然结束
+            if self.isRunning():
+                # 等待线程完成当前任务
+                if not self.wait(3000):  # 等待3秒
+                    # 如果3秒后还没结束，强制终止
+                    self.terminate()
+                    self.wait(1000)  # 再等1秒确保终止
+        except Exception as e:
+            # 静默处理停止过程中的异常
+            pass
 
 
 class MainWindow(QMainWindow):
@@ -1100,20 +1212,23 @@ class MainWindow(QMainWindow):
         # 🎯 启用浏览器状态监控，使用安全的定时器机制
         try:
             self.setup_browser_status_timer()  # 启用状态监控
-            self.log_message("🔄 浏览器状态同步已启用", "INFO")
+            # 🔧 简化：不记录日志，减少输出
         except Exception as e:
             self.log_message(f"⚠️ 浏览器状态监控启动失败: {e}", "WARNING")
         
         self.load_data()
 
         # 原有的性能优化补丁已清理，性能问题应通过重构解决
+        
+        # 🎯 启动日志缓冲区定时刷新，确保日志及时显示
+        self._setup_log_flush_timer()
 
         self.log_message(f"{Config.APP_NAME} v{Config.APP_VERSION} 启动完成")
     
     def _initialize_services(self):
         """初始化服务层"""
         try:
-            self.log_message("🔧 开始初始化服务层...", "INFO")
+            # 🔧 简化启动日志，只记录关键信息
             
             # 🚀 初始化性能优化组件
             self._initialize_performance_components()
@@ -1130,7 +1245,7 @@ class MainWindow(QMainWindow):
             self._init_file_service(FileService)
             self._init_settings_service(SettingsService)
             
-            self.log_message("🔧 服务层初始化完成", "SUCCESS")
+            self.log_message("✅ 服务层初始化完成", "SUCCESS")
             
         except Exception as e:
             self.log_message(f"❌ 服务层初始化失败: {e}", "ERROR")
@@ -1141,60 +1256,50 @@ class MainWindow(QMainWindow):
         """初始化账号服务"""
         try:
             self.account_service = AccountService(self)
-            if self.account_service.initialize():
-                self.log_message("✅ AccountService 初始化成功", "INFO")
-            else:
-                self.log_message("❌ AccountService 初始化失败", "ERROR")
+            if not self.account_service.initialize():
+                self.log_message("❌ 账号服务初始化失败", "ERROR")
         except Exception as e:
-            self.log_message(f"❌ AccountService 初始化错误: {e}", "ERROR")
+            self.log_message(f"❌ 账号服务初始化错误: {e}", "ERROR")
             self.account_service = None
     
     def _init_upload_service(self, UploadService):
         """初始化上传服务"""
         try:
             self.upload_service = UploadService(self)
-            if self.upload_service.initialize():
-                self.log_message("✅ UploadService 初始化成功", "INFO")
-            else:
-                self.log_message("❌ UploadService 初始化失败", "ERROR")
+            if not self.upload_service.initialize():
+                self.log_message("❌ 上传服务初始化失败", "ERROR")
         except Exception as e:
-            self.log_message(f"❌ UploadService 初始化错误: {e}", "ERROR")
+            self.log_message(f"❌ 上传服务初始化错误: {e}", "ERROR")
             self.upload_service = None
     
     def _init_license_service(self, LicenseService):
         """初始化许可证服务"""
         try:
             self.license_service = LicenseService(self)
-            if self.license_service.initialize():
-                self.log_message("✅ LicenseService 初始化成功", "INFO")
-            else:
-                self.log_message("❌ LicenseService 初始化失败", "ERROR")
+            if not self.license_service.initialize():
+                self.log_message("❌ 许可证服务初始化失败", "ERROR")
         except Exception as e:
-            self.log_message(f"❌ LicenseService 初始化错误: {e}", "ERROR")
+            self.log_message(f"❌ 许可证服务初始化错误: {e}", "ERROR")
             self.license_service = None
     
     def _init_file_service(self, FileService):
         """初始化文件服务"""
         try:
             self.file_service = FileService(self)
-            if self.file_service.initialize():
-                self.log_message("✅ FileService 初始化成功", "INFO")
-            else:
-                self.log_message("❌ FileService 初始化失败", "ERROR")
+            if not self.file_service.initialize():
+                self.log_message("❌ 文件服务初始化失败", "ERROR")
         except Exception as e:
-            self.log_message(f"❌ FileService 初始化错误: {e}", "ERROR")
+            self.log_message(f"❌ 文件服务初始化错误: {e}", "ERROR")
             self.file_service = None
     
     def _init_settings_service(self, SettingsService):
         """初始化设置服务"""
         try:
             self.settings_service = SettingsService(self)
-            if self.settings_service.initialize():
-                self.log_message("✅ SettingsService 初始化成功", "INFO")
-            else:
-                self.log_message("❌ SettingsService 初始化失败", "ERROR")
+            if not self.settings_service.initialize():
+                self.log_message("❌ 设置服务初始化失败", "ERROR")
         except Exception as e:
-            self.log_message(f"❌ SettingsService 初始化错误: {e}", "ERROR")
+            self.log_message(f"❌ 设置服务初始化错误: {e}", "ERROR")
             self.settings_service = None
     
     def _create_fallback_services(self):
@@ -1224,15 +1329,12 @@ class MainWindow(QMainWindow):
             
             # 初始化缓存管理器
             self.cache_manager = CacheManager(max_size=500, default_ttl=600)
-            self.log_message("✅ CacheManager 初始化成功", "INFO")
             
             # 初始化任务队列
             self.task_queue = TaskQueue(max_workers=3)
-            self.log_message("✅ TaskQueue 初始化成功", "INFO")
             
             # 初始化内存管理器
             self.memory_manager = MemoryManager(gc_threshold=200.0, auto_gc_interval=600)
-            self.log_message("✅ MemoryManager 初始化成功", "INFO")
             
             # 添加内存警告回调
             def memory_warning_callback(message):
@@ -1241,7 +1343,8 @@ class MainWindow(QMainWindow):
             if hasattr(self.memory_manager, 'add_warning_callback'):
                 self.memory_manager.add_warning_callback(memory_warning_callback)
             
-            self.log_message("🚀 性能优化组件初始化完成", "SUCCESS")
+            # 只在全部成功时记录一条日志
+            self.log_message("✅ 性能组件初始化完成", "SUCCESS")
             
         except ImportError as e:
             self.log_message(f"⚠️ 性能组件不可用: {e}", "WARNING")
@@ -1489,9 +1592,9 @@ class MainWindow(QMainWindow):
                 current_time = time.time()
                 last_log = self._last_status_log.get(username, 0)
                 
-                # 只有距离上次日志超过120秒才记录
-                if current_time - last_log > 120:
-                    self.log_message(f"🔄 {username} -> {new_status}", "INFO")
+                # 只有距离上次日志超过300秒才记录，减少状态变化日志
+                if current_time - last_log > 300:
+                    self.log_message(f"🔄 {username} -> {new_status}", "DEBUG")  # 改为DEBUG级别
                     self._last_status_log[username] = current_time
                     
         except Exception as e:
@@ -1514,43 +1617,196 @@ class MainWindow(QMainWindow):
         # QTimer.singleShot(2000, self.setup_file_monitor)  # 暂时注释掉
     
     def log_message(self, message: str, level: str = "INFO"):
-        """添加日志消息 - 性能优化版"""
-        if not hasattr(self, 'log_text'):
-            return
+        """🎯 安全的日志消息添加 - 修复闪退问题"""
+        try:
+            # 🎯 修复1：线程安全检查
+            from PyQt5.QtCore import QThread, QTimer
+            if QThread.currentThread() != self.thread():
+                # 如果不在主线程，使用QTimer延迟到主线程执行
+                QTimer.singleShot(0, lambda: self._safe_log_message(message, level))
+                return
             
-        # 🎯 性能优化：限制日志条数，防止内存无限增长
-        if not hasattr(self, '_log_count'):
-            self._log_count = 0
+            self._safe_log_message(message, level)
+            
+        except Exception as e:
+            # 🎯 静默处理日志异常，防止无限递归
+            print(f"日志记录异常: {e}")
+    
+    def _safe_log_message(self, message: str, level: str = "INFO"):
+        """🎯 安全的日志消息处理 - 主线程执行，优化日志过滤"""
+        try:
+            if not hasattr(self, 'log_text') or not self.log_text:
+                return
+            
+            # 🎯 新增：日志级别过滤，减少不必要的输出
+            if not self._should_log(message, level):
+                return
+            
+            # 🎯 修复2：HTML转义，防止注入攻击和解析异常
+            import html
+            safe_message = html.escape(str(message))
+            
+            # 🎯 修复3：限制单条日志长度，防止超长日志导致崩溃
+            if len(safe_message) > 500:  # 进一步减少到500字符
+                safe_message = safe_message[:497] + "..."
+            
+            # 🎯 修复4：初始化日志计数
+            if not hasattr(self, '_log_count'):
+                self._log_count = 0
+            if not hasattr(self, '_log_buffer'):
+                self._log_buffer = []
+            
+            # 🎯 修复5：使用缓冲区批量更新，减少DOM操作
+            timestamp = time.strftime("%H:%M:%S")
+            
+            # 简化颜色处理
+            color_map = {
+                "ERROR": "#dc3545",
+                "WARNING": "#ffc107", 
+                "SUCCESS": "#28a745",
+                "INFO": "#17a2b8"
+            }
+            color = color_map.get(level, "#17a2b8")
+            
+            # 🎯 修复6：简化HTML格式，减少解析开销
+            log_entry = f'[{timestamp}] {safe_message}'
+            self._log_buffer.append((log_entry, color))
+            
+            # 🎯 修复7：批量清理日志，防止内存溢出
+            if self._log_count > 200:  # 进一步降低到200条
+                try:
+                    self.log_text.clear()
+                    self._log_count = 0
+                    self._log_buffer.clear()
+                    self.log_text.append("--- 日志已清理 ---")
+                except:
+                    pass
+            
+            # 🎯 修复8：批量更新UI，每10条或缓冲区满时更新
+            if len(self._log_buffer) >= 10 or self._log_count % 50 == 0:
+                self._flush_log_buffer()
+            
+        except Exception as e:
+            # 🎯 静默处理异常，防止日志功能影响主程序
+            try:
+                print(f"安全日志记录异常: {e}")
+            except:
+                pass
+    
+    def _should_log(self, message: str, level: str) -> bool:
+        """🎯 日志过滤器 - 减少不必要的日志输出"""
+        # 🎯 检查是否开启详细日志模式
+        verbose_mode = getattr(self, '_verbose_logging', False)
+        if verbose_mode:
+            return True  # 详细模式下显示所有日志
         
-        # 🎯 性能优化：批量清理日志
-        if self._log_count > 500:  # 限制500条日志
-            self.log_text.clear()
-            self._log_count = 0
-            self.log_text.append('<span style="color: #666;">--- 日志已清理 ---</span><br>')
+        # 🚫 过滤掉的调试信息
+        debug_filters = [
+            "📋 账号选择状态变更:",
+            "📊 账号",
+            "🔄 账号状态同步",
+            "📂 已更新上传记录缓存",
+            "💾 保存账号选择状态:",
+            "💾 保存投稿成功等待时间:",
+            "🔍 检查账号",
+            "浏览器状态失败:",
+            "⚠️ 获取账号",
+            "进度失败:",
+            "📂 上传记录文件不存在",
+            "🔄 状态刷新完成"
+        ]
         
-        # 🎯 性能优化：简化日志格式，减少HTML处理
-        timestamp = time.strftime("%H:%M:%S")
+        # 🚫 过滤DEBUG级别的消息
+        if level == "DEBUG":
+            return False
         
-        # 简化颜色处理
-        color_map = {
-            "ERROR": "#dc3545",
-            "WARNING": "#ffc107", 
-            "SUCCESS": "#28a745",
-            "INFO": "#17a2b8"
-        }
-        color = color_map.get(level, "#17a2b8")
+        # 🚫 过滤包含特定关键词的消息
+        for filter_keyword in debug_filters:
+            if filter_keyword in message:
+                return False
         
-        # 🎯 性能优化：使用更简单的格式
-        formatted_message = f'<span style="color: {color};">[{timestamp}] {message}</span><br>'
+        # 🚫 过滤重复的状态消息
+        if hasattr(self, '_last_logged_messages'):
+            if message in self._last_logged_messages:
+                return False
+        else:
+            self._last_logged_messages = set()
         
-        # 🎯 性能优化：减少UI更新频率
-        self.log_text.append(formatted_message)
-        self._log_count += 1
+        # 记录最近的消息，防止重复（最多记录50条）
+        if len(self._last_logged_messages) > 50:
+            self._last_logged_messages.clear()
+        self._last_logged_messages.add(message)
         
-        # 🎯 性能优化：只在必要时滚动
-        if self._log_count % 5 == 0:  # 每5条日志才滚动一次
-            if hasattr(self, 'auto_scroll') and getattr(self, 'auto_scroll', True):
-                self.log_text.moveCursor(QTextCursor.End)
+        # ✅ 只保留用户关心的重要信息
+        important_keywords = [
+            "启动", "完成", "成功", "失败", "错误", "警告", 
+            "上传", "登录", "删除", "添加", "开始", "停止",
+            "✅", "❌", "⚠️", "🚀", "🎉", "💾", "🗑️"
+        ]
+        
+        # 如果是重要级别或包含重要关键词，则显示
+        if level in ["ERROR", "WARNING", "SUCCESS"] or any(keyword in message for keyword in important_keywords):
+            return True
+        
+        # 其他INFO级别的消息，只显示简洁的
+        return len(message) < 100  # 只显示简短的信息
+    
+    def _flush_log_buffer(self):
+        """🎯 刷新日志缓冲区 - 批量更新UI"""
+        try:
+            if not hasattr(self, '_log_buffer') or not self._log_buffer:
+                return
+            
+            if not hasattr(self, 'log_text') or not self.log_text:
+                return
+            
+            # 🎯 批量构建HTML内容
+            html_content = ""
+            for log_entry, color in self._log_buffer:
+                html_content += f'<div style="color: {color}; margin: 1px 0;">{log_entry}</div>'
+            
+            # 🎯 一次性添加到文本框
+            if html_content:
+                try:
+                    self.log_text.append(html_content)
+                    self._log_count += len(self._log_buffer)
+                except:
+                    # 如果HTML添加失败，使用纯文本方式
+                    plain_content = "\n".join([entry for entry, _ in self._log_buffer])
+                    self.log_text.append(plain_content)
+                    self._log_count += len(self._log_buffer)
+            
+            # 清空缓冲区
+            self._log_buffer.clear()
+            
+            # 🎯 修复9：安全的自动滚动
+            try:
+                if hasattr(self, 'auto_scroll') and getattr(self, 'auto_scroll', True):
+                    # 使用更安全的滚动方式
+                    scrollbar = self.log_text.verticalScrollBar()
+                    if scrollbar:
+                        scrollbar.setValue(scrollbar.maximum())
+            except:
+                # 滚动失败时静默处理
+                pass
+                
+        except Exception as e:
+            try:
+                print(f"刷新日志缓冲区异常: {e}")
+            except:
+                pass
+    
+    def _setup_log_flush_timer(self):
+        """🎯 设置日志缓冲区定时刷新机制"""
+        try:
+            from PyQt5.QtCore import QTimer
+            # 创建定时器，每2秒自动刷新一次日志缓冲区
+            if not hasattr(self, '_log_flush_timer'):
+                self._log_flush_timer = QTimer()
+                self._log_flush_timer.timeout.connect(self._flush_log_buffer)
+                self._log_flush_timer.start(2000)  # 每2秒刷新一次
+        except Exception as e:
+            print(f"设置日志刷新定时器失败: {e}")
     
     @prevent_double_click(duration=3.0, disable_text="添加中...")
     def add_account(self):
@@ -1951,9 +2207,11 @@ class MainWindow(QMainWindow):
             if not hasattr(self, 'account_table'):
                 return
             
-            # 🎯 性能优化：减少日志输出
+            # 🎯 性能优化：减少日志输出，只在账号数量变化时记录
             if len(accounts) > 0:
-                self.log_message(f"📋 刷新账号列表 ({len(accounts)} 个)", "INFO")
+                if not hasattr(self, '_last_account_count') or self._last_account_count != len(accounts):
+                    self.log_message(f"📋 账号列表已更新 ({len(accounts)} 个)", "INFO")
+                    self._last_account_count = len(accounts)
             
             # 🎯 性能优化：暂时断开信号，避免频繁触发
             self.account_table.blockSignals(True)
@@ -2025,17 +2283,23 @@ class MainWindow(QMainWindow):
                 
                 # 🎯 性能优化：进度信息延迟加载，避免阻塞
                 try:
+                    # 🎯 修复：安全获取target_count，避免控件未创建的问题
                     target_count = 1
-                    if hasattr(self, 'videos_per_account_input'):
+                    if (hasattr(self, 'videos_per_account_input') and 
+                        self.videos_per_account_input and
+                        self.videos_per_account_input.text().strip()):
                         try:
-                            target_count = int(self.videos_per_account_input.text())
-                        except:
+                            target_count = max(1, int(self.videos_per_account_input.text().strip()))
+                        except (ValueError, AttributeError):
                             target_count = 1
                     
-                    # 🎯 简化进度获取，减少文件I/O
-                    # from core.account_manager import account_manager
+                    # 🎯 简化进度获取，减少文件I/O，增加异常处理
                     if hasattr(self, 'account_service') and self.account_service:
-                        status, completed, published = self.account_service.get_account_progress(username, target_count)
+                        try:
+                            status, completed, published = self.account_service.get_account_progress(username, target_count)
+                        except Exception as e:
+                            self.log_message(f"⚠️ 获取账号 {username} 进度失败: {e}", "WARNING")
+                            status, completed, published = f"0/{target_count}", False, 0
                     else:
                         status, completed, published = f"0/{target_count}", False, 0
                     
@@ -2688,18 +2952,41 @@ class MainWindow(QMainWindow):
         self.auto_scroll = enabled
     
     def clear_log(self):
-        """清空日志"""
-        if hasattr(self, 'log_text'):
-            self.log_text.clear()
+        """🎯 安全清空日志"""
+        try:
+            if hasattr(self, 'log_text') and self.log_text:
+                self.log_text.clear()
+                # 重置计数器和缓冲区
+                self._log_count = 0
+                if hasattr(self, '_log_buffer'):
+                    self._log_buffer.clear()
+                # 直接添加清空消息，避免递归调用log_message
+                self.log_text.append('<div style="color: #28a745; margin: 2px 0;">--- 日志已手动清空 ---</div>')
+        except Exception as e:
+            print(f"清空日志异常: {e}")
     
     def save_log(self):
-        """保存日志"""
-        if hasattr(self, 'log_text'):
+        """🎯 安全保存日志"""
+        try:
+            if not hasattr(self, 'log_text') or not self.log_text:
+                return
+            
+            # 先刷新缓冲区，确保所有日志都显示
+            if hasattr(self, '_flush_log_buffer'):
+                self._flush_log_buffer()
+            
+            from PyQt5.QtWidgets import QFileDialog
             filename, _ = QFileDialog.getSaveFileName(self, "保存日志", "log.txt", "Text Files (*.txt)")
             if filename:
-                with open(filename, 'w', encoding='utf-8') as f:
-                    f.write(self.log_text.toPlainText())
-                self.log_message(f"日志已保存到: {filename}", "SUCCESS")
+                try:
+                    with open(filename, 'w', encoding='utf-8') as f:
+                        f.write(self.log_text.toPlainText())
+                    # 直接添加成功消息，避免递归调用
+                    self.log_text.append(f'<div style="color: #28a745; margin: 2px 0;">[{time.strftime("%H:%M:%S")}] 日志已保存到: {filename}</div>')
+                except Exception as e:
+                    self.log_text.append(f'<div style="color: #dc3545; margin: 2px 0;">[{time.strftime("%H:%M:%S")}] 保存日志失败: {e}</div>')
+        except Exception as e:
+            print(f"保存日志异常: {e}")
     
     def force_detect_browser_status(self):
         """强制检测浏览器状态"""
@@ -2840,9 +3127,9 @@ class MainWindow(QMainWindow):
         old_status = self._browser_status_cache.get(account_name, "未活跃")
         self._browser_status_cache[account_name] = status_text
         
-        # 🎯 只在状态真正改变时记录日志和刷新界面
+        # 🎯 只在状态真正改变时刷新界面，不记录状态变化日志
         if old_status != status_text:
-            self.log_message(f"🔧 浏览器状态变化: {account_name} -> {status_text}")
+            # 简化：移除状态变化日志，减少输出
             
             # 🎯 立即更新界面，无需延迟
             try:
@@ -3447,35 +3734,200 @@ class MainWindow(QMainWindow):
             pass
     
     def closeEvent(self, event):
-        """🎯 强力关闭事件 - 防止残留进程和卡死"""
-        self.log_message("🔄 正在强力关闭程序...", "INFO")
+        """🎯 安全关闭事件 - 修复强制退出导致的意外终止问题"""
+        # 🔍 检测是否为意外关闭
+        is_unexpected_close = False
+        if hasattr(self, 'batch_upload_thread') and self.batch_upload_thread and self.batch_upload_thread.isRunning():
+            is_unexpected_close = True
+            self.log_message("⚠️ 检测到批量上传进行中的意外关闭事件！", "WARNING")
+        
+        self.log_message("🔄 程序正在安全关闭...", "INFO")
         
         try:
-            # 🎯 第一步：立即停止所有活动（最快）
+            # 🎯 第一步：停止所有活动
             self._stop_all_activities()
             
-            # 🎯 第二步：快速保存配置（同步，1秒超时）
-            self._quick_save_config()
+            # 🎯 第二步：保存配置（增加超时保护）
+            try:
+                self._safe_save_config()
+            except Exception as e:
+                self.log_message(f"⚠️ 保存配置失败: {e}", "WARNING")
             
-            # 🎯 第三步：强制关闭所有浏览器（并行，1秒超时）
-            self._force_close_browsers()
+            # 🎯 第三步：关闭浏览器（增加超时保护）
+            try:
+                self._safe_close_browsers()
+            except Exception as e:
+                self.log_message(f"⚠️ 关闭浏览器失败: {e}", "WARNING")
             
-            # 🎯 第四步：强制终止残留进程
-            self._force_kill_remaining_processes()
+            # 🎯 第四步：清理线程和资源
+            try:
+                self._cleanup_threads()
+            except Exception as e:
+                self.log_message(f"⚠️ 清理线程失败: {e}", "WARNING")
             
-            self.log_message("✅ 程序强力关闭完成", "SUCCESS")
+            self.log_message("✅ 程序安全关闭完成", "SUCCESS")
             
         except Exception as e:
             self.log_message(f"❌ 关闭过程出错: {e}", "ERROR")
+            # 🎯 即使出错也不强制退出，让Qt正常处理
         
         finally:
-            # 🎯 无论如何都立即退出
+            # 🎯 修复：使用正常的Qt退出机制，不强制杀死进程
+            if is_unexpected_close:
+                # 如果是意外关闭，询问用户是否确认
+                from PyQt5.QtWidgets import QMessageBox
+                reply = QMessageBox.question(
+                    self, 
+                    "确认退出", 
+                    "检测到程序可能意外退出。\n\n是否确认关闭程序？\n\n点击「Yes」正常退出\n点击「No」取消关闭",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No
+                )
+                
+                if reply == QMessageBox.No:
+                    event.ignore()  # 取消关闭
+                    self.log_message("🔄 用户取消关闭，程序继续运行", "INFO")
+                    return
+            
+            # 🎯 使用安全的退出方式
             event.accept()
             QApplication.processEvents()
             
-            # 🎯 最终强制退出
-            import os
-            os._exit(0)  # 强制退出，不等待任何清理
+            # 🎯 移除强制退出，改为正常退出
+            # os._exit(0)  # ❌ 删除这行强制退出代码
+            
+            # 🎯 使用正常的应用退出
+            if QApplication.instance():
+                QApplication.instance().quit()
+    
+    def _safe_save_config(self):
+        """安全保存配置（带超时保护）"""
+        try:
+            import threading
+            import time
+            
+            config_saved = threading.Event()
+            save_error = None
+            
+            def save_config_task():
+                nonlocal save_error
+                try:
+                    config = self.core_app.config_manager.load_config()
+                    if 'ui_settings' not in config:
+                        config['ui_settings'] = {}
+                    
+                    if hasattr(self, 'concurrent_browsers_input'):
+                        config['ui_settings']['concurrent_browsers'] = self.concurrent_browsers_input.text()
+                    if hasattr(self, 'videos_per_account_input'):
+                        config['ui_settings']['videos_per_account'] = self.videos_per_account_input.text()
+                    if hasattr(self, 'video_dir_edit'):
+                        config['ui_settings']['video_directory'] = self.video_dir_edit.text()
+                    
+                    self.core_app.config_manager.save_config(config)
+                    config_saved.set()
+                except Exception as e:
+                    save_error = e
+                    config_saved.set()
+            
+            # 启动保存任务
+            save_thread = threading.Thread(target=save_config_task)
+            save_thread.daemon = True
+            save_thread.start()
+            
+            # 等待保存完成或超时（3秒）
+            if config_saved.wait(timeout=3):
+                if save_error:
+                    raise save_error
+                self.log_message("✅ 配置已安全保存", "INFO")
+            else:
+                self.log_message("⚠️ 配置保存超时，跳过", "WARNING")
+                
+        except Exception as e:
+            self.log_message(f"❌ 安全保存配置失败: {e}", "ERROR")
+    
+    def _safe_close_browsers(self):
+        """安全关闭浏览器（带超时保护）"""
+        try:
+            import threading
+            import time
+            
+            def close_browser_task(account_name):
+                try:
+                    account = self.core_app.account_manager.get_account(account_name)
+                    if hasattr(account, 'browser_instance') and account.browser_instance:
+                        account.browser_instance.quit()
+                        account.browser_instance = None
+                        return f"✅ {account_name}"
+                    return f"⏭️ {account_name} (无需关闭)"
+                except Exception as e:
+                    return f"❌ {account_name}: {e}"
+            
+            # 并行关闭所有浏览器（最多等待5秒）
+            accounts = self.core_app.account_manager.get_all_accounts()
+            if accounts:
+                close_threads = []
+                results = []
+                
+                for account_name in accounts[:10]:  # 最多处理10个账号
+                    thread = threading.Thread(
+                        target=lambda an=account_name: results.append(close_browser_task(an))
+                    )
+                    thread.daemon = True
+                    thread.start()
+                    close_threads.append(thread)
+                
+                # 等待所有线程完成或超时
+                start_time = time.time()
+                for thread in close_threads:
+                    remaining_time = max(0, 5 - (time.time() - start_time))
+                    thread.join(timeout=remaining_time)
+                
+                # 输出结果
+                for result in results:
+                    self.log_message(f"🔒 关闭浏览器: {result}", "INFO")
+                    
+        except Exception as e:
+            self.log_message(f"❌ 安全关闭浏览器失败: {e}", "ERROR")
+    
+    def _cleanup_threads(self):
+        """清理所有线程和资源"""
+        try:
+            # 清理上传线程
+            thread_names = [
+                'batch_upload_thread', 'upload_thread', 'login_thread',
+                'license_worker', 'file_worker', 'periodic_checker'
+            ]
+            
+            for thread_name in thread_names:
+                if hasattr(self, thread_name):
+                    thread = getattr(self, thread_name)
+                    if thread and hasattr(thread, 'isRunning') and thread.isRunning():
+                        if hasattr(thread, 'stop'):
+                            thread.stop()
+                        if hasattr(thread, 'quit'):
+                            thread.quit()
+                        
+                        # 等待线程结束（最多1秒）
+                        if hasattr(thread, 'wait'):
+                            thread.wait(1000)  # 1秒超时
+                        
+                        self.log_message(f"🧹 清理线程: {thread_name}", "INFO")
+            
+            # 清理性能组件
+            if hasattr(self, 'memory_manager') and self.memory_manager:
+                try:
+                    self.memory_manager.cleanup()
+                except:
+                    pass
+            
+            if hasattr(self, 'task_queue') and self.task_queue:
+                try:
+                    self.task_queue.shutdown()
+                except:
+                    pass
+                    
+        except Exception as e:
+            self.log_message(f"❌ 清理线程失败: {e}", "ERROR")
     
     def _stop_all_activities(self):
         """停止所有定时器和线程活动"""
@@ -3484,7 +3936,8 @@ class MainWindow(QMainWindow):
             timers = [
                 'browser_status_timer', 'file_monitor_timer', 
                 '_video_refresh_timer', '_file_refresh_timer',
-                '_file_delete_refresh_timer', 'security_timer'
+                '_file_delete_refresh_timer', 'security_timer',
+                '_log_flush_timer'  # 🎯 新增：停止日志刷新定时器
             ]
             
             for timer_name in timers:
@@ -3823,9 +4276,14 @@ class MainWindow(QMainWindow):
 
 
     def on_account_progress_updated(self, account_name):
-        """🎯 处理账号进度更新事件 - 自动刷新指定账号的进度显示"""
+        """🎯 处理账号进度更新事件 - 优化版：避免UI阻塞"""
         try:
             self.log_message(f"📊 账号 {account_name} 发布进度已更新，刷新显示", "INFO")
+            
+            # 🎯 关键修复1：使用缓存避免重复文件读取
+            if not hasattr(self, '_progress_cache'):
+                self._progress_cache = {}
+                self._progress_cache_time = {}
             
             # 获取目标数量
             target_count = 1
@@ -3835,18 +4293,33 @@ class MainWindow(QMainWindow):
                 except:
                     target_count = 1
             
-            # from core.account_manager import account_manager
-            
+            # 🎯 关键修复2：只更新指定账号，不遍历所有账号
             # 查找对应的表格行并更新进度
             for row in range(self.account_table.rowCount()):
                 username_item = self.account_table.item(row, 1)
                 if username_item and username_item.text() == account_name:
                     try:
-                        # 获取最新进度
-                        if hasattr(self, 'account_service') and self.account_service:
-                            status, completed, published = self.account_service.get_account_progress(account_name, target_count)
+                        # 🎯 关键修复3：使用缓存或异步获取进度
+                        cache_key = f"{account_name}_{target_count}"
+                        current_time = time.time()
+                        
+                        # 检查缓存是否有效（5秒内）
+                        if (cache_key in self._progress_cache and 
+                            cache_key in self._progress_cache_time and
+                            current_time - self._progress_cache_time[cache_key] < 5):
+                            
+                            status, completed, published = self._progress_cache[cache_key]
+                            self.log_message(f"📋 使用缓存数据: {account_name} -> {status}", "DEBUG")
                         else:
-                            status, completed, published = f"0/{target_count}", False, 0
+                            # 缓存过期或不存在，重新获取（但限制频率）
+                            if hasattr(self, 'account_service') and self.account_service:
+                                status, completed, published = self.account_service.get_account_progress(account_name, target_count)
+                                
+                                # 更新缓存
+                                self._progress_cache[cache_key] = (status, completed, published)
+                                self._progress_cache_time[cache_key] = current_time
+                            else:
+                                status, completed, published = f"0/{target_count}", False, 0
 
                         # 更新今日已发列（第5列）
                         today_published_item = self.account_table.item(row, 5)
@@ -3870,11 +4343,16 @@ class MainWindow(QMainWindow):
                         
                         self.log_message(f"✅ 账号 {account_name} 进度显示已更新: {status}", "SUCCESS")
                         
-                        # 🎯 新增：同时更新账号统计信息
-                        try:
-                            self._update_account_stats_with_progress(target_count)
-                        except:
-                            pass  # 忽略统计更新失败
+                        # 🎯 关键修复4：延迟和异步执行统计更新，避免阻塞UI
+                        # 使用QTimer延迟执行，避免在投稿流程中阻塞
+                        if not hasattr(self, '_stats_update_timer'):
+                            from PyQt5.QtCore import QTimer
+                            self._stats_update_timer = QTimer()
+                            self._stats_update_timer.setSingleShot(True)
+                            self._stats_update_timer.timeout.connect(lambda: self._async_update_account_stats(target_count))
+                        
+                        # 延迟1秒执行统计更新，避免在投稿关键时刻阻塞
+                        self._stats_update_timer.start(1000)
                         
                         break
                         
@@ -3896,6 +4374,82 @@ class MainWindow(QMainWindow):
             
         except Exception as e:
             self.log_message(f"❌ 处理账号进度更新事件失败: {str(e)}", "ERROR")
+
+    def _async_update_account_stats(self, target_count):
+        """🎯 异步更新账号统计，避免阻塞UI线程"""
+        try:
+            # 🎯 关键修复：使用任务队列异步执行统计更新
+            if hasattr(self, 'task_queue') and self.task_queue:
+                def stats_task():
+                    return self._calculate_account_stats(target_count)
+                
+                def on_stats_complete(stats_result):
+                    if stats_result and hasattr(self, 'account_stats_label'):
+                        self.account_stats_label.setText(stats_result)
+                
+                self.task_queue.submit(stats_task, callback=on_stats_complete, name="update_account_stats")
+            else:
+                # 后备方案：直接计算（但限制频率）
+                if not hasattr(self, '_last_stats_update') or time.time() - self._last_stats_update > 3:
+                    self._last_stats_update = time.time()
+                    stats_text = self._calculate_account_stats(target_count)
+                    if stats_text and hasattr(self, 'account_stats_label'):
+                        self.account_stats_label.setText(stats_text)
+                        
+        except Exception as e:
+            self.log_message(f"❌ 异步更新账号统计失败: {e}", "WARNING")
+
+    def _calculate_account_stats(self, target_count):
+        """🎯 计算账号统计信息（可以在后台线程中执行）"""
+        try:
+            if not hasattr(self, 'account_table'):
+                return None
+            
+            total_accounts = 0
+            active_accounts = 0
+            completed_accounts = 0
+            in_progress_accounts = 0
+            
+            # 🎯 优化：使用缓存数据，避免重复文件IO
+            cache = getattr(self, '_progress_cache', {})
+            
+            # 遍历账号表格统计信息
+            for row in range(self.account_table.rowCount()):
+                username_item = self.account_table.item(row, 1)
+                login_status_item = self.account_table.item(row, 2)
+                
+                if username_item:
+                    total_accounts += 1
+                    username = username_item.text()
+                    
+                    # 统计活跃账号（登录状态为"已登录"）
+                    if login_status_item and "已登录" in login_status_item.text():
+                        active_accounts += 1
+                    
+                    # 🎯 优先使用缓存数据统计完成状态
+                    cache_key = f"{username}_{target_count}"
+                    if cache_key in cache:
+                        status, completed, published = cache[cache_key]
+                        if completed:
+                            completed_accounts += 1
+                        elif published > 0:
+                            in_progress_accounts += 1
+                    else:
+                        # 缓存中没有数据，暂时跳过（避免阻塞）
+                        pass
+            
+            # 构建统计信息文本
+            stats_text = (
+                f"账号统计：总数 {total_accounts}，活跃 {active_accounts} | "
+                f"进度：已完成 {completed_accounts}，进行中 {in_progress_accounts}，"
+                f"未开始 {total_accounts - completed_accounts - in_progress_accounts}"
+            )
+            
+            return stats_text
+            
+        except Exception as e:
+            self.log_message(f"❌ 计算账号统计失败: {e}", "WARNING")
+            return None
 
     def on_videos_per_account_changed(self):
         """🎯 处理每账号视频数量变化事件 - 实时更新所有账号的进度显示"""
