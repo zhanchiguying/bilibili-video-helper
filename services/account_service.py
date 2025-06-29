@@ -231,7 +231,7 @@ class AccountService(BaseService):
     
     def get_account_progress(self, username: str, target_count: int = 1) -> Tuple[str, bool, int]:
         """
-        获取账号上传进度 - 优化版：添加文件缓存机制
+        获取账号上传进度 - SQLite增强版
         
         Args:
             username: 账号名
@@ -241,106 +241,28 @@ class AccountService(BaseService):
             Tuple[str, bool, int]: (进度状态, 是否完成, 已发布数量)
         """
         try:
-            # 🎯 关键优化1：添加类级别的文件缓存机制
-            if not hasattr(self.__class__, '_uploaded_videos_cache'):
-                self.__class__._uploaded_videos_cache = {}
-                self.__class__._cache_timestamp = 0
-                self.__class__._cache_file_mtime = 0
+            # 🚀 优先使用数据库查询
+            from database.database_manager import db_manager
             
-            import json
-            import os
-            import time
-            from datetime import datetime
-            
-            # 获取今日日期
-            today = datetime.now().strftime("%Y-%m-%d")
-            published_count = 0
-            
-            # 🎯 关键优化2：智能缓存策略 - 检查文件是否有更新
-            uploaded_videos_file = 'uploaded_videos.json'
-            current_time = time.time()
-            
-            need_reload = False
-            if os.path.exists(uploaded_videos_file):
-                file_mtime = os.path.getmtime(uploaded_videos_file)
-                # 如果文件修改时间更新，或者缓存超过30秒，则重新加载
-                if (file_mtime != self.__class__._cache_file_mtime or 
-                    current_time - self.__class__._cache_timestamp > 30):
-                    need_reload = True
-            else:
-                # 🎯 修复：文件不存在时，确保缓存为空
-                if not self.__class__._uploaded_videos_cache:
-                    self.__class__._uploaded_videos_cache = {}
-                    self.__class__._cache_timestamp = current_time
-                    
-            if need_reload or not self.__class__._uploaded_videos_cache:
-                try:
-                    if os.path.exists(uploaded_videos_file):
-                        # 🎯 关键优化3：重新读取文件并更新缓存
-                        with open(uploaded_videos_file, 'r', encoding='utf-8') as f:
-                            data = json.load(f)
-                            self.__class__._uploaded_videos_cache = data.get('uploaded_videos', {})
-                            self.__class__._cache_timestamp = current_time
-                            self.__class__._cache_file_mtime = os.path.getmtime(uploaded_videos_file)
-                        
-                        self.log_message(f"📂 已更新上传记录缓存，包含 {len(self.__class__._uploaded_videos_cache)} 条记录", "INFO")
-                    else:
-                        # 🎯 修复：文件不存在时初始化空缓存
-                        self.__class__._uploaded_videos_cache = {}
-                        self.__class__._cache_timestamp = current_time
-                        self.__class__._cache_file_mtime = 0
-                        self.log_message("📂 上传记录文件不存在，初始化空缓存", "INFO")
-                        
-                except Exception as e:
-                    self.log_message(f"⚠️ 读取上传记录失败: {e}", "WARNING")
-                    self.__class__._uploaded_videos_cache = {}
-                    self.__class__._cache_timestamp = current_time
-            
-            # 🎯 关键优化4：从缓存中统计，而不是每次读取文件
-            uploaded_videos = self.__class__._uploaded_videos_cache
-            
-            # 统计今日该账号的发布数量
-            for md5_hash, video_info in uploaded_videos.items():
-                if video_info.get('account') == username:
-                    # 🎯 优先使用新的upload_date字段，兼容旧的upload_time字段
-                    upload_date = video_info.get('upload_date')
-                    if not upload_date:
-                        # 兼容旧格式：从upload_time转换
-                        upload_time = video_info.get('upload_time', 0)
-                        if upload_time > 0:
-                            try:
-                                upload_date = datetime.fromtimestamp(upload_time).strftime("%Y-%m-%d")
-                            except (ValueError, OSError, OverflowError):
-                                upload_date = None
-                    
-                    # 检查是否是今日上传
-                    if upload_date == today:
-                        # 🎯 修正逻辑：今日投稿记录都计入进度，不管文件是否删除
-                        published_count += 1
-            
-            # 判断是否完成目标
-            is_completed = published_count >= target_count
-            
-            # 生成状态文本
-            if is_completed:
-                status_text = f"{published_count}/{target_count} 已完成"
-            else:
-                status_text = f"{published_count}/{target_count} 进行中"
-            
-            # 🎯 添加详细日志（但降低频率）
-            if not hasattr(self, '_last_log_time'):
-                self._last_log_time = {}
-            
-            log_key = f"{username}_{target_count}"
-            if (log_key not in self._last_log_time or 
-                current_time - self._last_log_time[log_key] > 10):  # 每10秒最多记录一次
-                self._last_log_time[log_key] = current_time
-                self.log_message(f"📊 账号 {username} 进度查询: {status_text}", "DEBUG")
-                
+            status_text, is_completed, published_count = db_manager.get_account_progress(username, target_count)
+            self.log_message(f"📊 数据库查询进度: {username} -> {status_text}", "DEBUG")
             return status_text, is_completed, published_count
             
-        except Exception as e:
-            return self.handle_error(e, f"获取账号 {username} 进度时发生错误", ("获取失败", False, 0))
+        except Exception as db_error:
+            self.log_message(f"⚠️ 数据库查询失败，回退到JSON模式: {db_error}", "WARNING")
+            
+            # 🔄 回退到JSON文件模式
+            try:
+                # 🎯 JSON模式已废弃，直接返回错误
+                import time
+                from datetime import datetime
+                
+                # ❌ JSON模式已废弃，直接返回失败状态
+                self.log_message(f"❌ JSON模式已废弃，数据库查询失败: {db_error}", "ERROR")
+                return ("数据库查询失败", False, 0)
+                
+            except Exception as e:
+                return self.handle_error(e, f"获取账号 {username} 进度时发生错误", ("获取失败", False, 0))
 
     @classmethod
     def clear_progress_cache(cls):

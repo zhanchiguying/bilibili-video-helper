@@ -3,10 +3,13 @@ B站视频带货助手_完整EXE版
 B站视频带货助手_完整EXE版.rar
 ms-playwright
 videos
+migration_backup
 
+bilibili_helper.db
+bilibili_helper.db-shm
+bilibili_helper.db-wal
 config.json
-uploaded_videos.json
-accounts.json
+
 *_bak
 
 # 构建临时目录

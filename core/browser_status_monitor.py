@@ -105,8 +105,8 @@ class BrowserStatusMonitor(QObject):
         self.logger.info("⏹️ 浏览器状态监控已停止")
     
     def _monitor_loop(self):
-        """监控主循环 - 优化版：延长间隔并限制并发，减少资源消耗"""
-        self.logger.info("🔍 浏览器状态监控循环开始 (优化版)")
+        """监控主循环 - 优化版：快速响应并简化检查逻辑"""
+        self.logger.info("🔍 浏览器状态监控循环开始 (快速响应版)")
         
         while self.monitoring:
             try:
@@ -114,77 +114,58 @@ class BrowserStatusMonitor(QObject):
                     accounts_to_check = list(self.account_ports.items())
                     self.pending_updates.clear()  # 清空待更新列表
                 
-                # 🔧 优化：限制每次检查的账号数量，避免资源耗尽
-                max_concurrent_checks = 5  # 每次最多检查5个账号
-                if len(accounts_to_check) > max_concurrent_checks:
-                    # 轮询检查：确保所有账号都能被检查到
-                    if not hasattr(self, '_check_offset'):
-                        self._check_offset = 0
+                # 🔧 优化：每次检查所有账号，但缩短间隔
+                if accounts_to_check:
+                    self.logger.debug(f"🔍 检查 {len(accounts_to_check)} 个账号状态")
                     
-                    start_idx = self._check_offset
-                    end_idx = min(start_idx + max_concurrent_checks, len(accounts_to_check))
-                    
-                    # 如果到达末尾，从头开始
-                    if end_idx >= len(accounts_to_check):
-                        current_batch = accounts_to_check[start_idx:] + accounts_to_check[:max_concurrent_checks - (len(accounts_to_check) - start_idx)]
-                        self._check_offset = max_concurrent_checks - (len(accounts_to_check) - start_idx)
-                    else:
-                        current_batch = accounts_to_check[start_idx:end_idx]
-                        self._check_offset = end_idx
-                    
-                    self.logger.debug(f"🔍 分批检查账号: {len(current_batch)}/{len(accounts_to_check)} (偏移: {start_idx})")
-                else:
-                    current_batch = accounts_to_check
-                    self.logger.debug(f"🔍 检查所有账号: {len(current_batch)}")
-                
-                # 批量检查选定的账号状态
-                for account_name, devtools_port in current_batch:
-                    try:
-                        # 检测端口状态
-                        is_active = self._check_port_status(devtools_port)
-                        
-                        # 获取之前的状态
-                        old_status = self.status_cache.get(account_name, False)
-                        
-                        # 更新缓存
-                        with self.lock:
-                            self.status_cache[account_name] = is_active
-                        
-                        # 如果状态有变化，添加到待更新列表
-                        if old_status != is_active:
-                            with self.lock:
-                                self.pending_updates[account_name] = is_active
-                            status_text = "活跃" if is_active else "未活跃"
-                            self.logger.info(f"🔄 浏览器状态变化: {account_name} -> {status_text} (端口: {devtools_port})")
-                        else:
-                            # 🔧 优化：减少重复日志，只在DEBUG模式下记录
-                            status_text = "活跃" if is_active else "未活跃"
-                            self.logger.debug(f"🔍 浏览器状态保持: {account_name} -> {status_text} (端口: {devtools_port})")
+                    # 检查所有账号状态
+                    for account_name, devtools_port in accounts_to_check:
+                        try:
+                            # 检测端口状态
+                            is_active = self._check_port_status(devtools_port)
                             
-                    except Exception as e:
-                        self.logger.error(f"检查账号 {account_name} 端口 {devtools_port} 时异常: {e}")
+                            # 获取之前的状态
+                            old_status = self.status_cache.get(account_name, False)
+                            
+                            # 更新缓存
+                            with self.lock:
+                                self.status_cache[account_name] = is_active
+                            
+                            # 如果状态有变化，添加到待更新列表
+                            if old_status != is_active:
+                                with self.lock:
+                                    self.pending_updates[account_name] = is_active
+                                status_text = "活跃" if is_active else "未活跃"
+                                self.logger.info(f"🔄 浏览器状态变化: {account_name} -> {status_text} (端口: {devtools_port})")
+                            else:
+                                # DEBUG级别记录保持状态
+                                status_text = "活跃" if is_active else "未活跃"
+                                self.logger.debug(f"🔍 浏览器状态保持: {account_name} -> {status_text}")
+                                
+                        except Exception as e:
+                            self.logger.error(f"检查账号 {account_name} 端口 {devtools_port} 时异常: {e}")
+                    
+                    # 批量发送状态变化信号
+                    with self.lock:
+                        if self.pending_updates:
+                            for account_name, is_active in self.pending_updates.items():
+                                self.browser_status_changed.emit(account_name, is_active)
+                            self.logger.info(f"📊 批量更新 {len(self.pending_updates)} 个账号状态")
                 
-                # 批量发送状态变化信号
-                with self.lock:
-                    if self.pending_updates:
-                        for account_name, is_active in self.pending_updates.items():
-                            self.browser_status_changed.emit(account_name, is_active)
-                        self.logger.info(f"📊 批量更新 {len(self.pending_updates)} 个账号状态")
-                
-                # 🔧 优化：延长检查间隔到30秒，减少HTTP请求频率
-                time.sleep(30)  # 从10秒改为30秒
+                # 🔧 优化：缩短检查间隔到10秒，快速响应浏览器关闭
+                time.sleep(10)  # 从30秒改为10秒
                 
             except Exception as e:
                 self.logger.error(f"浏览器状态监控循环异常: {e}")
-                time.sleep(10)  # 异常时仍使用较短间隔重试
+                time.sleep(5)  # 异常时快速重试
         
         self.logger.info("🔍 浏览器状态监控循环结束")
     
     def _check_port_status(self, port: int) -> bool:
-        """检查DevTools端口状态 - 优化版：更快的超时设置"""
+        """检查DevTools端口状态 - 优化版：平衡速度和准确性"""
         try:
-            # 🔧 优化：缩短超时时间，减少等待
-            response = requests.get(f'http://127.0.0.1:{port}/json', timeout=1)  # 从2秒改为1秒
+            # 🔧 优化：增加超时时间到2秒，减少误判但保持响应速度
+            response = requests.get(f'http://127.0.0.1:{port}/json', timeout=2)
             
             # 只要能连接成功就认为活跃
             if response.status_code == 200:
@@ -196,10 +177,10 @@ class BrowserStatusMonitor(QObject):
             # 连接失败 = 未活跃
             return False
         except requests.exceptions.Timeout:
-            # 超时 = 未活跃
+            # 超时 = 未活跃  
             return False
         except Exception as e:
-            # 🔧 改进：记录异常详情而不是静默忽略
+            # 记录异常详情
             self.logger.debug(f"端口 {port} 检查异常: {type(e).__name__}: {e}")
             return False
     

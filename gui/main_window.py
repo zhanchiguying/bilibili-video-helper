@@ -260,43 +260,30 @@ class BatchUploadThread(QThread):
         self.account_popup_handled = {}  # {账号名: 是否已处理弹窗}
         
     def load_uploaded_videos(self):
-        """加载已上传视频MD5记录"""
+        """加载已上传视频MD5记录 - SQLite增强版"""
         try:
-            with open('uploaded_videos.json', 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                return data.get('uploaded_videos', {})
-        except:
+            # 🚀 优先使用数据库模式
+            from database.database_manager import db_manager
+            
+            # 加载所有视频记录到内存，兼容现有代码结构
+            uploaded_videos = {}
+            
+            # 获取所有上传记录（这里可以优化为按需加载）
+            # 但为了兼容现有的MD5检查逻辑，暂时全量加载
+            # TODO: 后续可以改为直接调用db_manager.is_video_uploaded()
+            
+            self.upload_status.emit("📊 从数据库加载上传记录...")
+            return uploaded_videos  # 暂时返回空字典，依赖数据库查询
+            
+        except Exception as e:
+            # ❌ JSON模式已废弃，直接返回空字典
+            self.upload_status.emit(f"❌ 数据库加载失败: {e}")
             return {}
     
     def save_uploaded_videos(self):
-        """保存已上传视频MD5记录 - 优化版：添加缓存清除"""
-        try:
-            data = {
-                "uploaded_videos": self.uploaded_videos_md5,
-                "description": "记录已上传视频的MD5值，防止重复上传导致封号",
-                "created_at": "2025-01-25",
-                "format": {
-                    "video_md5": {
-                        "filename": "原始文件名",
-                        "upload_time": "上传时间戳",
-                        "account": "上传账号",
-                        "product_id": "商品ID",
-                        "deleted": "是否已删除"
-                    }
-                }
-            }
-            with open('uploaded_videos.json', 'w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-                
-            # 🎯 关键修复：保存文件后通知service层清除缓存
-            try:
-                from services.account_service import AccountService
-                AccountService.clear_progress_cache()
-            except:
-                pass  # 忽略清除缓存失败
-                
-        except Exception as e:
-            print(f"保存上传记录失败: {e}")
+        """保存已上传视频MD5记录 - 数据库版本（已废弃JSON）"""
+        # ❌ JSON模式已废弃，此方法仅保留兼容性，实际数据已保存到数据库
+        pass
     
     def get_file_md5(self, file_path):
         """计算文件MD5值"""
@@ -311,27 +298,47 @@ class BatchUploadThread(QThread):
             return None
     
     def is_video_uploaded(self, file_path):
-        """检查视频是否已上传"""
+        """检查视频是否已上传 - SQLite增强版"""
         md5_hash = self.get_file_md5(file_path)
         if not md5_hash:
             return False
-        return md5_hash in self.uploaded_videos_md5
+        
+        try:
+            # 🚀 优先使用数据库查询
+            from database.database_manager import db_manager
+            return db_manager.is_video_uploaded(md5_hash)
+        except Exception as e:
+            # 回退到内存模式
+            return md5_hash in self.uploaded_videos_md5
     
     def mark_video_uploaded(self, file_path, account, product_id):
-        """标记视频已上传 - 优化版：添加缓存清除"""
+        """标记视频已上传 - SQLite增强版"""
         md5_hash = self.get_file_md5(file_path)
         if md5_hash:
             from datetime import datetime
-            self.uploaded_videos_md5[md5_hash] = {
-                "filename": os.path.basename(file_path),
-                "upload_date": datetime.now().strftime("%Y-%m-%d"),
-                "account": account,
-                "product_id": product_id,
-                "deleted": False
-            }
-            self.save_uploaded_videos()
             
-                        # 🎯 关键修复：保存文件后立即清除进度缓存
+            try:
+                # 🚀 优先使用数据库记录
+                from database.database_manager import db_manager
+                success = db_manager.add_uploaded_video(
+                    md5_hash=md5_hash,
+                    filename=os.path.basename(file_path),
+                    account_username=account,
+                    upload_date=datetime.now().strftime("%Y-%m-%d"),
+                    product_id=product_id,
+                    file_size=os.path.getsize(file_path) if os.path.exists(file_path) else 0
+                )
+                
+                if success:
+                    self.upload_status.emit(f"📊 数据库记录上传: {os.path.basename(file_path)}")
+                else:
+                    self.upload_status.emit(f"❌ 数据库记录失败: {os.path.basename(file_path)}")
+                    
+            except Exception as e:
+                # ❌ 数据库失败，不再回退到JSON
+                self.upload_status.emit(f"❌ 数据库记录失败: {os.path.basename(file_path)} - {e}")
+            
+            # 🎯 关键修复：保存后立即清除进度缓存
             self._clear_progress_cache()
 
     def _clear_progress_cache(self):
@@ -351,7 +358,7 @@ class BatchUploadThread(QThread):
             self.log_message(f"⚠️ 清除进度缓存失败: {e}", "WARNING")
 
     def delete_video_file(self, file_path):
-        """删除视频文件 - 修复MD5记录更新"""
+        """删除视频文件 - 数据库版本"""
         try:
             # 🎯 先计算MD5，再删除文件
             md5_hash = self.get_file_md5(file_path)
@@ -359,10 +366,14 @@ class BatchUploadThread(QThread):
             # 删除文件
             os.remove(file_path)
             
-            # 更新MD5记录
-            if md5_hash and md5_hash in self.uploaded_videos_md5:
-                self.uploaded_videos_md5[md5_hash]["deleted"] = True
-                self.save_uploaded_videos()
+            # 🚀 更新数据库记录为已删除
+            if md5_hash:
+                try:
+                    from database.database_manager import db_manager
+                    db_manager.mark_video_deleted(md5_hash)
+                    self.upload_status.emit(f"📊 数据库标记删除: {os.path.basename(file_path)}")
+                except Exception as e:
+                    self.upload_status.emit(f"⚠️ 数据库标记删除失败: {e}")
                 
                 # 🎯 关键修复：文件删除后清除进度缓存
                 self._clear_progress_cache()
@@ -1209,10 +1220,11 @@ class MainWindow(QMainWindow):
         # 连接浏览器状态监控器信号
         self.browser_monitor.browser_status_changed.connect(self.on_browser_status_changed)
         
-        # 🎯 启用浏览器状态监控，使用安全的定时器机制
+        # 🎯 启动浏览器状态监控器
         try:
-            self.setup_browser_status_timer()  # 启用状态监控
-            # 🔧 简化：不记录日志，减少输出
+            self.browser_monitor.start_monitoring()  # 启动核心监控器
+            self.setup_browser_status_timer()  # 设置GUI状态缓存
+            self.log_message("🔧 浏览器状态监控已启动", "INFO")
         except Exception as e:
             self.log_message(f"⚠️ 浏览器状态监控启动失败: {e}", "WARNING")
         
@@ -1358,6 +1370,29 @@ class MainWindow(QMainWindow):
             self.task_queue = None
             self.memory_manager = None
     
+    def _init_optimized_video_loader(self):
+        """🚀 初始化高性能视频文件加载器"""
+        try:
+            from performance.video_file_loader import OptimizedVideoListManager
+            
+            # 确保视频列表组件存在
+            if hasattr(self, 'video_list') and hasattr(self, 'video_stats_label'):
+                self.video_loader_manager = OptimizedVideoListManager(
+                    self.video_list, 
+                    self.video_stats_label
+                )
+                self.log_message("🚀 高性能视频文件加载器已初始化", "SUCCESS")
+            else:
+                self.video_loader_manager = None
+                self.log_message("⚠️ 视频组件未就绪，跳过加载器初始化", "WARNING")
+                
+        except ImportError as e:
+            self.log_message(f"⚠️ 视频文件加载器不可用: {e}", "WARNING")
+            self.video_loader_manager = None
+        except Exception as e:
+            self.log_message(f"❌ 视频文件加载器初始化失败: {e}", "ERROR")
+            self.video_loader_manager = None
+    
     def set_window_icon(self):
         """设置窗口图标"""
         try:
@@ -1499,8 +1534,9 @@ class MainWindow(QMainWindow):
                             username, is_active = result
                             self.on_browser_status_checked(username, is_active)
                     
-                    # 🎯 修复：使用简化的任务队列，无需导入TaskPriority
-                    if hasattr(self, 'task_queue') and self.task_queue:
+                    # 🎯 修复：检查task_queue是否真正可用（不是DummyManager）
+                    if (hasattr(self, 'task_queue') and self.task_queue and 
+                        hasattr(self.task_queue, 'submit') and callable(self.task_queue.submit)):
                         self.task_queue.submit(
                             check_browser_task, username,
                             callback=on_check_complete,
@@ -1606,6 +1642,9 @@ class MainWindow(QMainWindow):
         # 🆕 首先初始化服务层
         self._initialize_services()
         
+        # 🚀 初始化高性能视频文件加载器
+        self._init_optimized_video_loader()
+        
         self.load_ui_settings()  # 🎯 修复：先加载设置，包括账号选择状态
         self.refresh_accounts()  # 然后刷新账号，应用加载的选择状态
         self.refresh_video_list()  # 然后刷新视频列表
@@ -1694,34 +1733,41 @@ class MainWindow(QMainWindow):
                 pass
     
     def _should_log(self, message: str, level: str) -> bool:
-        """🎯 日志过滤器 - 减少不必要的日志输出"""
+        """🎯 优化版日志过滤器 - 大幅减少日志输出"""
         # 🎯 检查是否开启详细日志模式
         verbose_mode = getattr(self, '_verbose_logging', False)
         if verbose_mode:
             return True  # 详细模式下显示所有日志
         
-        # 🚫 过滤掉的调试信息
-        debug_filters = [
-            "📋 账号选择状态变更:",
-            "📊 账号",
-            "🔄 账号状态同步",
-            "📂 已更新上传记录缓存",
-            "💾 保存账号选择状态:",
-            "💾 保存投稿成功等待时间:",
-            "🔍 检查账号",
-            "浏览器状态失败:",
-            "⚠️ 获取账号",
-            "进度失败:",
-            "📂 上传记录文件不存在",
-            "🔄 状态刷新完成"
+        # 🚫 大幅扩展过滤规则，减少冗余日志
+        verbose_filters = [
+            # 投稿过程的详细步骤
+            "📝", "导航到", "⏳", "等待", "点击", "填写", "选择", "查找", "🔍",
+            "✅ 找到", "✅ 已", "✅ 使用", "智能等待", "尝试方法", "等待视频",
+            "视频上传中", "视频上传完成", "非首次上传", "提取标题", "方法1成功",
+            "标题填写成功", "话题选择成功", "视频信息填写完成", "商品添加流程",
+            "已选中", "已选择", "已点击", "已输入", "弹窗已加载", "链接选品",
+            "识别链接", "确定按钮已就绪", "确定窗口已消失", "iframe", "选择商品区域",
+            "在当前iframe", "识别完成", "最终添加按钮", "添加状态", "链接选品流程",
+            "滚动到页面", "立即投稿按钮", "JavaScript成功", "按钮消失", "按钮仍在",
+            "投稿处理结果", "投稿成功后等待中", "使用配置的", "等待中...", "📊 数据库",
+            
+            # 账号和状态信息
+            "📋 账号选择状态", "📊 账号", "🔄 账号状态", "📂 已更新", "💾 保存",
+            "🔍 检查账号", "浏览器状态", "⚠️ 获取账号", "进度失败", "📂 上传记录",
+            "🔄 状态刷新", "-> 活跃", "-> 未活跃", "进度显示已更新",
+            
+            # 系统和性能信息
+            "🔧", "🎯", "💻", "📁", "🌐", "👤", "🚀 启动异步", "扫描进度",
+            "高性能", "缓存", "性能组件", "视频文件加载器", "异步更新", "后台处理"
         ]
         
         # 🚫 过滤DEBUG级别的消息
         if level == "DEBUG":
             return False
         
-        # 🚫 过滤包含特定关键词的消息
-        for filter_keyword in debug_filters:
+        # 🚫 过滤详细的投稿步骤信息
+        for filter_keyword in verbose_filters:
             if filter_keyword in message:
                 return False
         
@@ -1732,24 +1778,31 @@ class MainWindow(QMainWindow):
         else:
             self._last_logged_messages = set()
         
-        # 记录最近的消息，防止重复（最多记录50条）
-        if len(self._last_logged_messages) > 50:
+        # 记录最近的消息，防止重复（最多记录30条）
+        if len(self._last_logged_messages) > 30:
             self._last_logged_messages.clear()
         self._last_logged_messages.add(message)
         
-        # ✅ 只保留用户关心的重要信息
-        important_keywords = [
-            "启动", "完成", "成功", "失败", "错误", "警告", 
-            "上传", "登录", "删除", "添加", "开始", "停止",
-            "✅", "❌", "⚠️", "🚀", "🎉", "💾", "🗑️"
+        # ✅ 只保留最核心的用户关心信息
+        critical_keywords = [
+            # 关键操作结果
+            "视频投稿成功", "投稿失败", "登录成功", "登录失败", "删除", "添加账号",
+            "开始批量上传", "上传完成", "上传失败", "程序启动", "构建", "初始化",
+            
+            # 关键状态图标
+            "🎉", "❌", "⚠️", "🗑️", "💀", "🛑", "🚨", "🔥"
         ]
         
-        # 如果是重要级别或包含重要关键词，则显示
-        if level in ["ERROR", "WARNING", "SUCCESS"] or any(keyword in message for keyword in important_keywords):
+        # 🔥 严格筛选：只显示关键错误、警告、成功和重要操作
+        if level in ["ERROR", "WARNING"] or any(keyword in message for keyword in critical_keywords):
             return True
         
-        # 其他INFO级别的消息，只显示简洁的
-        return len(message) < 100  # 只显示简短的信息
+        # 🔥 进一步限制：只显示非常简短的重要信息
+        if level == "SUCCESS" and len(message) < 50:
+            return True
+        
+        # 其他消息一律过滤
+        return False
     
     def _flush_log_buffer(self):
         """🎯 刷新日志缓冲区 - 批量更新UI"""
@@ -2399,11 +2452,15 @@ class MainWindow(QMainWindow):
         """选择视频目录"""
         directory = QFileDialog.getExistingDirectory(self, "选择视频目录", ".")
         if directory:
+            # 🚀 清除之前目录的缓存
+            if hasattr(self, 'video_loader_manager') and self.video_loader_manager:
+                self.video_loader_manager.clear_cache()
+                
             self.video_dir_edit.setText(directory)
-            self.refresh_video_list()
+            self.refresh_video_list(force_refresh=True)  # 强制刷新新目录
     
-    def refresh_video_list(self):
-        """🔧 优化版视频列表刷新 - 支持分页加载，解决大量文件内存问题"""
+    def refresh_video_list(self, force_refresh: bool = False):
+        """🚀 高性能视频列表刷新 - 异步加载，智能缓存"""
         if not hasattr(self, 'video_list'):
             return
             
@@ -2413,11 +2470,17 @@ class MainWindow(QMainWindow):
                 self.video_stats_label.setText("📊 文件统计: 请选择有效目录")
             return
         
+        # 🚀 使用高性能加载器
+        if hasattr(self, 'video_loader_manager') and self.video_loader_manager:
+            try:
+                self.video_loader_manager.refresh_directory(directory, force_refresh)
+                self.log_message(f"🚀 启动异步视频扫描: {directory}", "INFO")
+                return
+            except Exception as e:
+                self.log_message(f"⚠️ 高性能加载器失败，回退到传统方式: {e}", "WARNING")
+        
+        # 🔧 后备方案：传统同步方式（保持兼容性）
         try:
-            # 🔧 新增：分页参数
-            max_files_per_page = 200  # 每页最多显示200个文件
-            current_page = getattr(self, '_current_video_page', 0)
-            
             # 显示加载状态
             if hasattr(self, 'video_stats_label'):
                 self.video_stats_label.setText("📊 正在扫描文件...")
@@ -2426,22 +2489,22 @@ class MainWindow(QMainWindow):
             all_video_files = self.get_video_files(directory)
             total_files = len(all_video_files)
             
-            # 🔧 分页处理：只加载当前页的文件
+            # 分页参数
+            max_files_per_page = 200
+            current_page = getattr(self, '_current_video_page', 0)
+            
+            # 分页处理
             start_index = current_page * max_files_per_page
             end_index = min(start_index + max_files_per_page, total_files)
             current_page_files = all_video_files[start_index:end_index]
             
-            # 暂时断开信号
+            # 更新UI
             self.video_list.blockSignals(True)
             self.video_list.clear()
             
-            # 🔧 优化：只计算当前页文件的大小，避免全量计算
             page_total_size = 0
-            display_items = []
-            
             for file_path in current_page_files:
                 filename = os.path.basename(file_path)
-                # 🔧 优化：延迟加载文件大小，只显示文件名
                 try:
                     file_size = os.path.getsize(file_path)
                     page_total_size += file_size
@@ -2450,28 +2513,24 @@ class MainWindow(QMainWindow):
                 except:
                     display_text = filename
                     
-                display_items.append((display_text, file_path))
-                
                 item = QListWidgetItem(display_text)
                 item.setData(Qt.UserRole, file_path)
                 self.video_list.addItem(item)
             
-            # 重新启用信号
             self.video_list.blockSignals(False)
-            
-            # 🔧 计算分页信息
-            total_pages = (total_files + max_files_per_page - 1) // max_files_per_page if total_files > 0 else 1
             
             # 更新统计信息
             if hasattr(self, 'video_stats_label'):
                 page_size_mb = page_total_size / (1024 * 1024) if page_total_size > 0 else 0
+                total_pages = (total_files + max_files_per_page - 1) // max_files_per_page if total_files > 0 else 1
+                
                 if total_pages > 1:
                     stats_text = f"📊 第{current_page + 1}/{total_pages}页 | 当前页: {len(current_page_files)} 个文件 ({page_size_mb:.1f}MB) | 总计: {total_files} 个文件"
                 else:
                     stats_text = f"📊 文件统计: {total_files} 个文件, 总大小 {page_size_mb:.1f}MB"
                 self.video_stats_label.setText(stats_text)
             
-            # 🔧 更新分页按钮状态
+            # 更新分页按钮
             self._update_video_pagination_buttons(current_page, total_pages)
                 
         except Exception as e:
@@ -3542,10 +3601,19 @@ class MainWindow(QMainWindow):
             if hasattr(self, 'video_dir_edit'):
                 config['ui_settings']['video_directory'] = self.video_dir_edit.text()
             
-            # 🎯 新增：保存账号选择状态
+            # 🎯 新增：保存账号选择状态（清理后）
             if hasattr(self, '_account_selections'):
-                config['ui_settings']['account_selections'] = self._account_selections
-                self.log_message(f"💾 保存账号选择状态: {self._account_selections}", "DEBUG")
+                # 清理账号选择状态中的异常字符
+                from core.config import DataCleaner
+                cleaned_selections = DataCleaner.clean_dict_keys(self._account_selections)
+                config['ui_settings']['account_selections'] = cleaned_selections
+                
+                # 如果清理后有变化，更新内存中的数据
+                if cleaned_selections != self._account_selections:
+                    self._account_selections = cleaned_selections
+                    self.log_message("🧹 账号选择状态已清理异常字符", "INFO")
+                
+                self.log_message(f"💾 保存账号选择状态: {len(cleaned_selections)}个账号", "DEBUG")
             
             # 🎯 新增：保存投稿成功等待时间设置
             if hasattr(self, 'success_wait_time_spinbox'):
@@ -3932,6 +4000,14 @@ class MainWindow(QMainWindow):
     def _stop_all_activities(self):
         """停止所有定时器和线程活动"""
         try:
+            # 🎯 优先停止浏览器状态监控器
+            if hasattr(self, 'browser_monitor'):
+                try:
+                    self.browser_monitor.stop_monitoring()
+                    self.log_message("✅ 浏览器状态监控器已停止")
+                except Exception as e:
+                    self.log_message(f"⚠️ 停止状态监控器失败: {e}", "WARNING")
+            
             # 停止定时器
             timers = [
                 'browser_status_timer', 'file_monitor_timer', 
@@ -4378,8 +4454,10 @@ class MainWindow(QMainWindow):
     def _async_update_account_stats(self, target_count):
         """🎯 异步更新账号统计，避免阻塞UI线程"""
         try:
-            # 🎯 关键修复：使用任务队列异步执行统计更新
-            if hasattr(self, 'task_queue') and self.task_queue:
+            # 🎯 关键修复：检查task_queue是否真正可用（不是DummyManager）
+            if (hasattr(self, 'task_queue') and self.task_queue and 
+                hasattr(self.task_queue, 'submit') and callable(self.task_queue.submit)):
+                
                 def stats_task():
                     return self._calculate_account_stats(target_count)
                 
@@ -4387,6 +4465,7 @@ class MainWindow(QMainWindow):
                     if stats_result and hasattr(self, 'account_stats_label'):
                         self.account_stats_label.setText(stats_result)
                 
+                # 使用任务队列异步执行
                 self.task_queue.submit(stats_task, callback=on_stats_complete, name="update_account_stats")
             else:
                 # 后备方案：直接计算（但限制频率）
@@ -4397,7 +4476,16 @@ class MainWindow(QMainWindow):
                         self.account_stats_label.setText(stats_text)
                         
         except Exception as e:
-            self.log_message(f"❌ 异步更新账号统计失败: {e}", "WARNING")
+            # 🎯 修复：使用后备方案，避免阻塞
+            try:
+                if not hasattr(self, '_last_stats_update') or time.time() - self._last_stats_update > 3:
+                    self._last_stats_update = time.time()
+                    stats_text = self._calculate_account_stats(target_count)
+                    if stats_text and hasattr(self, 'account_stats_label'):
+                        self.account_stats_label.setText(stats_text)
+            except:
+                pass  # 静默处理后备方案失败
+            self.log_message(f"❌ 异步更新账号统计失败，已使用后备方案: {e}", "WARNING")
 
     def _calculate_account_stats(self, target_count):
         """🎯 计算账号统计信息（可以在后台线程中执行）"""
@@ -4681,18 +4769,30 @@ class MainWindow(QMainWindow):
     
     def _video_prev_page(self):
         """视频文件上一页"""
-        current_page = getattr(self, '_current_video_page', 0)
-        if current_page > 0:
-            self._current_video_page = current_page - 1
-            self.refresh_video_list()
-            self.log_message(f"📖 切换到第 {self._current_video_page + 1} 页", "INFO")
+        if hasattr(self, 'video_loader_manager') and self.video_loader_manager:
+            # 🚀 使用高性能加载器的分页
+            if self.video_loader_manager.prev_page():
+                self.log_message("📄 已切换到上一页", "DEBUG")
+        else:
+            # 传统分页方式
+            current_page = getattr(self, '_current_video_page', 0)
+            if current_page > 0:
+                self._current_video_page = current_page - 1
+                self.refresh_video_list()
+                self.log_message(f"📖 切换到第 {self._current_video_page + 1} 页", "INFO")
     
     def _video_next_page(self):
         """视频文件下一页"""
-        current_page = getattr(self, '_current_video_page', 0)
-        self._current_video_page = current_page + 1
-        self.refresh_video_list()
-        self.log_message(f"📖 切换到第 {self._current_video_page + 1} 页", "INFO")
+        if hasattr(self, 'video_loader_manager') and self.video_loader_manager:
+            # 🚀 使用高性能加载器的分页
+            if self.video_loader_manager.next_page():
+                self.log_message("📄 已切换到下一页", "DEBUG")
+        else:
+            # 传统分页方式
+            current_page = getattr(self, '_current_video_page', 0)
+            self._current_video_page = current_page + 1
+            self.refresh_video_list()
+            self.log_message(f"📖 切换到第 {self._current_video_page + 1} 页", "INFO")
 
 
 

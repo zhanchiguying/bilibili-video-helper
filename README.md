@@ -100,7 +100,7 @@ B站视频助手/
 ├── logs/            # 日志文件目录  
 ├── ms-playwright/   # 内置浏览器
 ├── config.json      # 应用配置
-└── accounts.json    # 账号数据
+└── bilibili_helper.db  # SQLite数据库（账号+视频记录）
 ```
 
 ### 🎛️ **主要配置**

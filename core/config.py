@@ -13,7 +13,7 @@ class Config:
     
     # 文件路径
     CONFIG_FILE = "config.json"
-    ACCOUNTS_FILE = "accounts.json"
+    # ACCOUNTS_FILE = "accounts.json"  # ❌ 已迁移到SQLite数据库
     # KEY_FILE = "key.key"  # 🎯 已移除加密功能，不再需要密钥文件
     VIDEOS_DIR = "videos"
     LOGS_DIR = "logs"
@@ -70,6 +70,13 @@ class Config:
         "browser_settings": {
             "headless": False,
             "window_size": "1920,1080"
+        },
+        "ui_settings": {
+            "concurrent_browsers": "2",
+            "videos_per_account": "20",
+            "video_directory": "",
+            "account_selections": {},
+            "success_wait_time": 2
         }
     }
 
@@ -175,7 +182,7 @@ class ConfigManager:
         monitor_thread.start()
     
     def save_config(self) -> bool:
-        """保存配置文件 - 优化版本"""
+        """保存配置文件 - 优化版本（包含数据清理）"""
         with self._lock:
             try:
                 # 创建目录（如果不存在）
@@ -183,10 +190,19 @@ class ConfigManager:
                 if config_dir and not os.path.exists(config_dir):
                     os.makedirs(config_dir)
                 
+                # 🎯 保存前清理数据，去除\n等异常字符
+                cleaned_config = DataCleaner.clean_config_data(self.config)
+                
+                # 记录清理效果
+                if cleaned_config != self.config:
+                    self.logger.info("配置数据已清理，去除异常字符")
+                    # 更新内存中的配置为清理后的版本
+                    self.config = cleaned_config
+                
                 # 原子写入（先写临时文件再重命名）
                 temp_file = f"{self.config_file}.tmp"
                 with open(temp_file, 'w', encoding='utf-8') as f:
-                    json.dump(self.config, f, ensure_ascii=False, indent=2)
+                    json.dump(cleaned_config, f, ensure_ascii=False, indent=2)
                 
                 # 重命名为正式文件
                 os.replace(temp_file, self.config_file)
@@ -194,7 +210,7 @@ class ConfigManager:
                 # 更新修改时间
                 self._last_modified = os.path.getmtime(self.config_file)
                 
-                self.logger.debug("配置文件保存成功")
+                self.logger.debug("配置文件保存成功（已清理数据）")
                 return True
                 
             except Exception as e:
@@ -494,3 +510,96 @@ class SmartWaitManager:
                 return WebDriverWait(driver, timeout).until(
                     EC.presence_of_element_located((By.CSS_SELECTOR, selector))
                 )
+
+class DataCleaner:
+    """数据清理工具类"""
+    
+    @staticmethod
+    def clean_string(value: str) -> str:
+        """清理字符串，去除异常字符"""
+        if not isinstance(value, str):
+            return str(value)
+        
+        # 去除首尾空白字符和换行符
+        cleaned = value.strip()
+        
+        # 去除字符串中的换行符、制表符等控制字符
+        import re
+        cleaned = re.sub(r'[\n\r\t\v\f]', '', cleaned)
+        
+        # 去除多余的空格
+        cleaned = re.sub(r'\s+', ' ', cleaned)
+        
+        return cleaned
+    
+    @staticmethod
+    def clean_dict_keys(data: dict) -> dict:
+        """清理字典的键名"""
+        if not isinstance(data, dict):
+            return data
+        
+        cleaned_dict = {}
+        for key, value in data.items():
+            # 清理键名
+            if isinstance(key, str):
+                clean_key = DataCleaner.clean_string(key)
+            else:
+                clean_key = key
+            
+            # 递归清理值
+            if isinstance(value, dict):
+                clean_value = DataCleaner.clean_dict_keys(value)
+            elif isinstance(value, str):
+                clean_value = DataCleaner.clean_string(value)
+            elif isinstance(value, list):
+                clean_value = DataCleaner.clean_list(value)
+            else:
+                clean_value = value
+            
+            cleaned_dict[clean_key] = clean_value
+        
+        return cleaned_dict
+    
+    @staticmethod
+    def clean_list(data: list) -> list:
+        """清理列表数据"""
+        if not isinstance(data, list):
+            return data
+        
+        cleaned_list = []
+        for item in data:
+            if isinstance(item, str):
+                cleaned_list.append(DataCleaner.clean_string(item))
+            elif isinstance(item, dict):
+                cleaned_list.append(DataCleaner.clean_dict_keys(item))
+            elif isinstance(item, list):
+                cleaned_list.append(DataCleaner.clean_list(item))
+            else:
+                cleaned_list.append(item)
+        
+        return cleaned_list
+    
+    @staticmethod
+    def clean_config_data(config: dict) -> dict:
+        """清理完整的配置数据"""
+        if not isinstance(config, dict):
+            return {}
+        
+        # 深度清理所有数据
+        cleaned_config = DataCleaner.clean_dict_keys(config)
+        
+        # 特殊处理account_selections
+        if 'ui_settings' in cleaned_config and 'account_selections' in cleaned_config['ui_settings']:
+            account_selections = cleaned_config['ui_settings']['account_selections']
+            if isinstance(account_selections, dict):
+                # 清理账号名称键名，去除换行符等异常字符
+                cleaned_selections = {}
+                for account_name, selected in account_selections.items():
+                    clean_account_name = DataCleaner.clean_string(str(account_name))
+                    # 只保留有效的账号名称（数字字符串）
+                    if clean_account_name and clean_account_name.isdigit():
+                        cleaned_selections[clean_account_name] = bool(selected)
+                
+                cleaned_config['ui_settings']['account_selections'] = cleaned_selections
+        
+        return cleaned_config

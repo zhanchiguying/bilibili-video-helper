@@ -45,13 +45,15 @@ class DatabaseManager:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             
-            # 创建账号表
+            # 创建账号表 - 增强版，添加指纹和DevTools端口字段
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS accounts (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     username TEXT UNIQUE NOT NULL,
                     status TEXT DEFAULT 'inactive',
                     cookies TEXT,
+                    fingerprint TEXT,
+                    devtools_port INTEGER,
                     last_login INTEGER,
                     notes TEXT DEFAULT '',
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -99,17 +101,32 @@ class DatabaseManager:
                 )
             ''')
             
-            # 创建索引
+            # 创建高性能复合索引
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_accounts_username ON accounts (username)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_accounts_status ON accounts (status)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_accounts_status_updated ON accounts (status, updated_at)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_uploaded_videos_md5 ON uploaded_videos (md5_hash)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_uploaded_videos_account ON uploaded_videos (account_username)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_uploaded_videos_date ON uploaded_videos (upload_date)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_uploaded_videos_account_date ON uploaded_videos (account_username, upload_date, deleted)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_uploaded_videos_date_deleted ON uploaded_videos (upload_date, deleted)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_settings_key ON settings (key)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_browser_cache_username ON browser_status_cache (account_username)')
             
+            # 新增：为大数据量优化的统计视图
+            cursor.execute('''
+                CREATE VIEW IF NOT EXISTS account_progress_view AS
+                SELECT 
+                    a.username,
+                    a.status,
+                    COUNT(CASE WHEN uv.upload_date = date('now') AND uv.deleted = 0 THEN 1 END) as today_uploads,
+                    COUNT(CASE WHEN uv.deleted = 0 THEN 1 END) as total_uploads,
+                    MAX(uv.created_at) as last_upload_time
+                FROM accounts a
+                LEFT JOIN uploaded_videos uv ON a.username = uv.account_username
+                GROUP BY a.username, a.status
+            ''')
+            
             conn.commit()
-            self.logger.info("✅ 数据库初始化完成")
+            self.logger.info("✅ 数据库初始化完成（增强版）")
     
     @contextmanager
     def get_connection(self):
@@ -531,6 +548,201 @@ class DatabaseManager:
         except Exception as e:
             self.logger.error(f"清理旧记录失败: {e}")
             return 0
+    
+    # ================== 新增：批量操作接口 ==================
+    
+    def batch_update_accounts(self, account_updates: List[Dict]) -> int:
+        """
+        批量更新账号信息
+        
+        Args:
+            account_updates: 账号更新列表，格式：[{
+                'username': 'xxx', 
+                'status': 'active',
+                'cookies': '...',
+                'fingerprint': '...',
+                'devtools_port': 8080
+            }, ...]
+            
+        Returns:
+            int: 成功更新的账号数量
+        """
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                updated_count = 0
+                
+                for update_data in account_updates:
+                    username = update_data.get('username')
+                    if not username:
+                        continue
+                    
+                    # 动态构建更新字段
+                    update_fields = ["updated_at = CURRENT_TIMESTAMP"]
+                    params = []
+                    
+                    for field in ['status', 'cookies', 'fingerprint', 'devtools_port', 'last_login', 'notes']:
+                        if field in update_data:
+                            update_fields.append(f"{field} = ?")
+                            params.append(update_data[field])
+                    
+                    params.append(username)
+                    
+                    query = f"UPDATE accounts SET {', '.join(update_fields)} WHERE username = ?"
+                    cursor.execute(query, params)
+                    
+                    if cursor.rowcount > 0:
+                        updated_count += 1
+                
+                conn.commit()
+                self.logger.info(f"✅ 批量更新了 {updated_count} 个账号")
+                return updated_count
+                
+        except Exception as e:
+            self.logger.error(f"批量更新账号失败: {e}")
+            return 0
+    
+    def batch_insert_videos(self, video_records: List[Dict]) -> int:
+        """
+        批量插入视频记录
+        
+        Args:
+            video_records: 视频记录列表
+            
+        Returns:
+            int: 成功插入的记录数量
+        """
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                insert_data = []
+                for record in video_records:
+                    insert_data.append((
+                        record.get('md5_hash', ''),
+                        record.get('filename', ''),
+                        record.get('account_username', ''),
+                        record.get('upload_date', datetime.now().strftime("%Y-%m-%d")),
+                        record.get('product_id', ''),
+                        record.get('file_size', 0)
+                    ))
+                
+                cursor.executemany('''
+                    INSERT INTO uploaded_videos 
+                    (md5_hash, filename, account_username, upload_date, product_id, file_size)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                ''', insert_data)
+                
+                conn.commit()
+                inserted_count = cursor.rowcount
+                self.logger.info(f"✅ 批量插入了 {inserted_count} 条视频记录")
+                return inserted_count
+                
+        except Exception as e:
+            self.logger.error(f"批量插入视频记录失败: {e}")
+            return 0
+    
+    def get_all_accounts_cached(self, cache_seconds: int = 30) -> List[Dict]:
+        """
+        获取所有账号列表（带缓存）
+        
+        Args:
+            cache_seconds: 缓存时间（秒）
+            
+        Returns:
+            List[Dict]: 账号列表
+        """
+        cache_key = 'all_accounts'
+        
+        # 检查缓存
+        if hasattr(self, '_cache') and cache_key in self._cache:
+            cache_time, cached_data = self._cache[cache_key]
+            if time.time() - cache_time < cache_seconds:
+                return cached_data
+        
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT username, status, cookies, fingerprint, devtools_port, 
+                           last_login, notes, created_at, updated_at
+                    FROM accounts 
+                    ORDER BY created_at DESC
+                ''')
+                
+                accounts = [dict(row) for row in cursor.fetchall()]
+                
+                # 更新缓存
+                if not hasattr(self, '_cache'):
+                    self._cache = {}
+                self._cache[cache_key] = (time.time(), accounts)
+                
+                return accounts
+                
+        except Exception as e:
+            self.logger.error(f"获取所有账号失败: {e}")
+            return []
+    
+    def get_accounts_progress_batch(self, usernames: List[str], 
+                                   target_count: int = 1, date: str = None) -> Dict[str, Tuple[str, bool, int]]:
+        """
+        批量获取多个账号的进度信息（高性能版）
+        
+        Args:
+            usernames: 账号名列表
+            target_count: 目标上传数量
+            date: 指定日期，默认今天
+            
+        Returns:
+            Dict[str, Tuple[str, bool, int]]: {账号名: (状态文本, 是否完成, 已发布数量)}
+        """
+        if not usernames:
+            return {}
+        
+        if date is None:
+            date = datetime.now().strftime("%Y-%m-%d")
+        
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                # 使用IN查询批量获取所有账号的进度
+                placeholders = ','.join(['?' for _ in usernames])
+                query = f'''
+                    SELECT 
+                        account_username,
+                        COUNT(*) as upload_count
+                    FROM uploaded_videos 
+                    WHERE account_username IN ({placeholders}) 
+                        AND upload_date = ? 
+                        AND deleted = 0
+                    GROUP BY account_username
+                '''
+                
+                cursor.execute(query, usernames + [date])
+                results = cursor.fetchall()
+                
+                # 构建结果字典
+                progress_dict = {}
+                upload_counts = {row[0]: row[1] for row in results}
+                
+                for username in usernames:
+                    published_count = upload_counts.get(username, 0)
+                    is_completed = published_count >= target_count
+                    
+                    status_text = f"{published_count}/{target_count}"
+                    if is_completed:
+                        status_text += " ✅ 已完成"
+                    else:
+                        status_text += " 🔄 进行中"
+                    
+                    progress_dict[username] = (status_text, is_completed, published_count)
+                
+                return progress_dict
+                
+        except Exception as e:
+            self.logger.error(f"批量获取账号进度失败: {e}")
+            return {username: ("获取失败", False, 0) for username in usernames}
 
 
 # 全局数据库实例

@@ -1,8 +1,13 @@
-# B站视频助手 - 项目依赖
+# B站视频助手 v2.0 - SQLite版本依赖
+# 更新时间: 2025-06-29
+
+# ================================
 # 核心依赖 - 必须安装
+# ================================
 
 # GUI框架
 PyQt5>=5.15.0
+PyQt5-sip>=12.15.0
 
 # 浏览器自动化
 selenium>=4.0.0
@@ -10,27 +15,60 @@ webdriver-manager>=4.0.1
 
 # 网络请求
 requests>=2.25.0
+urllib3>=1.26.0
 fake-useragent>=1.4.0
 
-# 加密和安全
+# 加密和安全（许可证系统）
 cryptography>=41.0.0
 
-# 系统监控和性能
-psutil>=5.8.0
+# 图像处理（EXE构建时图标转换必需）
+Pillow>=9.0.0
 
-# 可选依赖 - 建议安装但不强制
+# ================================
+# 开发和构建工具 - 必需
+# ================================
+
+# EXE构建工具（构建EXE必需）
+pyinstaller>=6.0.0
+
+# 系统监控（如果需要硬件信息）
+# psutil>=5.8.0
 
 # CPU信息获取（用于硬件指纹）
-py-cpuinfo
+# py-cpuinfo
 
-# 图像处理（如果需要视频封面处理）
-# Pillow>=8.0.0
+# ================================
+# 测试和调试工具 - 开发环境
+# ================================
 
-# 开发和调试工具（可选）
+# 单元测试
 # pytest>=6.0.0
+
+# 代码质量检查
 # flake8>=4.0.0
 
-# 注意：
-# 1. opencv-python 已移除（项目中未实际使用）
-# 2. 加密功能已简化，cryptography用于许可证系统
-# 3. PyInstaller 用于构建EXE，开发时需要单独安装：pip install pyinstaller 
+# ================================
+# 安装说明
+# ================================
+
+# 快速安装核心依赖:
+# pip install PyQt5 selenium requests urllib3 fake-useragent cryptography webdriver-manager Pillow
+
+# 开发环境完整安装:
+# pip install -r requirements.txt
+
+# EXE构建环境安装:
+# pip install -r requirements.txt  # 包含PyInstaller和Pillow
+
+# ================================
+# 版本兼容性说明
+# ================================
+
+# Python版本要求: >=3.8
+# 推荐Python版本: 3.11.x
+# 测试环境: Windows 10/11
+
+# 注意事项:
+# 1. selenium需要ChromeDriver，建议使用webdriver-manager自动管理
+# 2. PyQt5在某些系统上可能需要额外的系统依赖
+# 3. cryptography在Windows上可能需要Visual C++ Build Tools 

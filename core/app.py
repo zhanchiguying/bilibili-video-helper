@@ -12,7 +12,7 @@ import atexit
 import hashlib
 import random
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Union
+from typing import Dict, List, Optional, Any, Union, Tuple
 import threading
 
 # PyQt5
@@ -758,11 +758,19 @@ class ConfigManager:
         # self.cipher = self._load_key()  # 🎯 禁用加密，改为明文存储
     
     def _ensure_files(self):
-        """确保文件存在"""
-        for file_path in [Config.CONFIG_FILE, Config.ACCOUNTS_FILE]:
-            if not os.path.exists(file_path):
-                with open(file_path, 'w', encoding='utf-8') as f:
-                    json.dump({}, f)
+        """确保文件存在 - SQLite版本"""
+        # 确保配置文件存在
+        if not os.path.exists(Config.CONFIG_FILE):
+            with open(Config.CONFIG_FILE, 'w', encoding='utf-8') as f:
+                json.dump({}, f)
+        
+        # 确保数据库存在（由DatabaseManager自动创建）
+        try:
+            from database.database_manager import db_manager
+            # 数据库连接会自动创建表结构
+            db_manager.get_all_accounts_cached()
+        except Exception as e:
+            self.logger.warning(f"数据库初始化检查失败: {e}")
         
         # 确保目录存在
         for dir_path in [Config.VIDEOS_DIR, Config.LOGS_DIR]:
@@ -787,87 +795,189 @@ class ConfigManager:
             return Config.DEFAULT_CONFIG.copy()
     
     def save_config(self, config: Dict[str, Any]) -> bool:
-        """保存配置"""
+        """保存配置 - 包含数据清理"""
         try:
+            # 🎯 保存前清理数据，去除\n等异常字符
+            from core.config import DataCleaner
+            cleaned_config = DataCleaner.clean_config_data(config)
+            
+            # 记录清理效果
+            if cleaned_config != config:
+                self.logger.info("配置数据已清理，去除异常字符")
+            
             with open(Config.CONFIG_FILE, 'w', encoding='utf-8') as f:
-                json.dump(config, f, ensure_ascii=False, indent=2)
+                json.dump(cleaned_config, f, ensure_ascii=False, indent=2)
             return True
         except Exception as e:
             self.logger.error(f"保存配置失败: {e}")
             return False
     
     def load_accounts(self) -> Dict[str, Any]:
-        """加载账号 - 明文版本"""
-        try:
-            with open(Config.ACCOUNTS_FILE, 'r', encoding='utf-8') as f:
-                accounts = json.load(f)
-            
-            # 🎯 直接返回明文数据，无需解密
-            if isinstance(accounts, dict):
-                return accounts
-            else:
-                return {}
-        except Exception as e:
-            self.logger.error(f"加载账号文件失败: {e}")
-            return {}
+        """加载账号 - SQLite版本（已废弃JSON）"""
+        # ❌ JSON模式已废弃，此方法已迁移到数据库
+        self.logger.warning("load_accounts方法已废弃，账号数据已迁移到SQLite数据库")
+        return {}
     
     def save_accounts(self, accounts: Dict[str, Any]) -> bool:
-        """保存账号 - 明文版本"""
-        try:
-            # 🎯 直接保存明文数据，无需加密
-            with open(Config.ACCOUNTS_FILE, 'w', encoding='utf-8') as f:
-                json.dump(accounts, f, ensure_ascii=False, indent=2)
-            return True
-        except Exception as e:
-            self.logger.error(f"保存账号失败: {e}")
-            return False
+        """保存账号 - SQLite版本（已废弃JSON）"""
+        # ❌ JSON模式已废弃，此方法已迁移到数据库
+        self.logger.warning("save_accounts方法已废弃，账号数据已迁移到SQLite数据库")
+        return True  # 返回True保持兼容性
 
 class AccountManager:
-    """账号管理器"""
+    """账号管理器 - SQLite增强版"""
     
     def __init__(self, config_manager: ConfigManager):
         self.config_manager = config_manager
         self.browser_manager = BrowserManager(self)  # 🎯 传入self引用
         self.logger = get_logger()
         self.fingerprint_validator = FingerprintValidator()
+        
+        # 🚀 SQLite模式：使用数据库适配器
+        self.use_database = True  # 可配置，便于测试和回滚
         self.accounts: Dict[str, Account] = {}
+        
+        # 初始化数据库适配器
+        try:
+            from database.database_adapter import database_account_manager
+            self.db_manager = database_account_manager
+            self.db_manager.set_logger(self.logger)
+            self.logger.info("🗄️ 数据库模式已启用")
+        except Exception as e:
+            self.logger.warning(f"数据库模式启用失败，回退到JSON模式: {e}")
+            self.use_database = False
+        
         self.load_accounts()
     
     def load_accounts(self):
-        """加载账号"""
+        """加载账号 - 支持数据库和JSON两种模式"""
+        if self.use_database and hasattr(self, 'db_manager'):
+            try:
+                # 🚀 数据库模式：从SQLite加载
+                self.db_manager.load_accounts()
+                all_usernames = self.db_manager.get_all_accounts()
+                
+                # 创建Account对象缓存（按需加载）
+                self.accounts.clear()
+                for username in all_usernames:
+                    db_account = self.db_manager.get_account(username)
+                    if db_account:
+                        # 将DatabaseAccount包装成传统Account对象
+                        account = Account(username, db_account.to_dict())
+                        # 保持浏览器实例引用
+                        if hasattr(db_account, '_browser_instance'):
+                            account.browser_instance = db_account._browser_instance
+                        self.accounts[username] = account
+                
+                self.logger.info(f"📊 从数据库加载了 {len(self.accounts)} 个账号")
+                return
+            except Exception as e:
+                self.logger.error(f"数据库加载失败，回退到JSON模式: {e}")
+                self.use_database = False
+        
+        # 🔄 JSON模式：传统加载方式
         data = self.config_manager.load_accounts()
+        self.accounts.clear()
         for username, account_data in data.items():
             self.accounts[username] = Account(username, account_data)
-        self.logger.info(f"加载了 {len(self.accounts)} 个账号")
+        self.logger.info(f"📁 从JSON加载了 {len(self.accounts)} 个账号")
     
     def save_accounts(self) -> bool:
-        """保存账号 - 修复版：确保不影响其他账号状态"""
+        """保存账号 - 支持数据库和JSON两种模式"""
+        if self.use_database and hasattr(self, 'db_manager'):
+            try:
+                # 🚀 数据库模式：批量更新到SQLite
+                account_updates = []
+                for username, account in self.accounts.items():
+                    account_data = account.to_dict()
+                    
+                    # 准备数据库更新格式
+                    update_data = {
+                        'username': username,
+                        'status': account_data.get('status', 'inactive'),
+                        'cookies': json.dumps(account_data.get('cookies', [])),
+                        'fingerprint': json.dumps(account_data.get('fingerprint', {})),
+                        'devtools_port': account_data.get('devtools_port'),
+                        'last_login': account_data.get('last_login', 0),
+                        'notes': account_data.get('notes', '')
+                    }
+                    account_updates.append(update_data)
+                
+                # 批量更新到数据库
+                from database.database_manager import db_manager
+                updated_count = db_manager.batch_update_accounts(account_updates)
+                
+                if updated_count > 0:
+                    self.logger.info(f"✅ 数据库批量更新成功：{updated_count} 个账号")
+                    return True
+                else:
+                    self.logger.warning("⚠️ 数据库批量更新：0个账号被更新")
+                    return True  # 可能没有变化，也算成功
+                    
+            except Exception as e:
+                self.logger.error(f"数据库保存失败，回退到JSON模式: {e}")
+                self.use_database = False
+        
+        # 🔄 JSON模式：传统保存方式
         try:
-            # 🎯 关键修复：只保存当前账号的状态，不重新判断其他账号状态
             data = {}
             for username, account in self.accounts.items():
                 account_data = account.to_dict()
-                
-                # 🔍 调试信息：记录每个账号的状态
                 self.logger.debug(f"保存账号状态: {username} -> {account_data['status']}")
-                
                 data[username] = account_data
             
             success = self.config_manager.save_accounts(data)
             if success:
-                self.logger.info(f"✅ 账号状态保存成功，总计 {len(data)} 个账号")
+                self.logger.info(f"✅ JSON保存成功：{len(data)} 个账号")
             else:
-                self.logger.error("❌ 账号状态保存失败")
+                self.logger.error("❌ JSON保存失败")
             return success
         except Exception as e:
-            self.logger.error(f"❌ 保存账号状态时发生错误: {e}")
+            self.logger.error(f"❌ JSON保存出错: {e}")
             return False
     
     def add_account(self, username: str) -> bool:
-        """添加账号"""
+        """添加账号 - 支持数据库和JSON两种模式"""
         if username in self.accounts:
             return False
         
+        # 数据库模式：直接添加到数据库
+        if self.use_database and hasattr(self, 'db_manager'):
+            try:
+                success = self.db_manager.add_account(username)
+                if success:
+                    # 创建Account对象并添加到内存缓存
+                    account = Account(username)
+                    
+                    # 生成初始指纹
+                    initial_fingerprint = self._generate_fingerprint(username)
+                    optimized_fingerprint = self.fingerprint_validator.optimize_fingerprint(username, initial_fingerprint)
+                    account.fingerprint = optimized_fingerprint
+                    
+                    # 更新数据库中的指纹信息
+                    from database.database_manager import db_manager
+                    db_manager.batch_update_accounts([{
+                        'username': username,
+                        'fingerprint': json.dumps(optimized_fingerprint)
+                    }])
+                    
+                    # 添加到内存缓存
+                    self.accounts[username] = account
+                    
+                    # 显示指纹安全性评估
+                    passed, results = self.fingerprint_validator.validate_fingerprint(username, optimized_fingerprint)
+                    if passed:
+                        self.logger.info(f"📊 账号 {username} 添加成功，指纹安全评分: {results['overall_score']}/100")
+                    else:
+                        self.logger.warning(f"⚠️ 账号 {username} 添加成功，但指纹风险较高，评分: {results['overall_score']}/100")
+                    
+                    return True
+                return False
+            except Exception as e:
+                self.logger.error(f"数据库添加账号失败，回退到JSON模式: {e}")
+                self.use_database = False
+        
+        # JSON模式：传统添加方式
         account = Account(username)
         
         # 生成初始指纹
@@ -883,18 +993,34 @@ class AccountManager:
         # 显示指纹安全性评估
         passed, results = self.fingerprint_validator.validate_fingerprint(username, optimized_fingerprint)
         if passed:
-            self.logger.info(f"账号 {username} 添加成功，指纹安全评分: {results['overall_score']}/100")
+            self.logger.info(f"📁 账号 {username} 添加成功，指纹安全评分: {results['overall_score']}/100")
         else:
-            self.logger.warning(f"账号 {username} 添加成功，但指纹风险较高，评分: {results['overall_score']}/100")
+            self.logger.warning(f"⚠️ 账号 {username} 添加成功，但指纹风险较高，评分: {results['overall_score']}/100")
         
         return self.save_accounts()
     
     def remove_account(self, username: str) -> bool:
-        """删除账号"""
-        if username in self.accounts:
-            del self.accounts[username]
-            return self.save_accounts()
-        return False
+        """删除账号 - 支持数据库和JSON两种模式"""
+        if username not in self.accounts:
+            return False
+        
+        # 数据库模式：从数据库删除
+        if self.use_database and hasattr(self, 'db_manager'):
+            try:
+                success = self.db_manager.remove_account(username)
+                if success:
+                    # 从内存缓存中删除
+                    del self.accounts[username]
+                    self.logger.info(f"📊 账号 {username} 已从数据库删除")
+                    return True
+                return False
+            except Exception as e:
+                self.logger.error(f"数据库删除账号失败，回退到JSON模式: {e}")
+                self.use_database = False
+        
+        # JSON模式：传统删除方式
+        del self.accounts[username]
+        return self.save_accounts()
     
     def get_account(self, username: str) -> Optional[Account]:
         """获取账号 - 兼容dict和Account对象"""
@@ -904,17 +1030,56 @@ class AccountManager:
         return get_account_safely(raw_account, self, username)
     
     def get_all_accounts(self) -> List[str]:
-        """获取所有账号名"""
+        """获取所有账号名 - 支持数据库和JSON两种模式"""
+        if self.use_database and hasattr(self, 'db_manager'):
+            try:
+                # 🚀 数据库模式：直接从数据库获取，性能更好
+                return self.db_manager.get_all_accounts()
+            except Exception as e:
+                self.logger.error(f"数据库获取账号列表失败，回退到内存模式: {e}")
+                self.use_database = False
+        
+        # 🔄 内存模式：从内存缓存获取
         return list(self.accounts.keys())
     
     def get_active_accounts(self) -> List[str]:
-        """获取活跃账号 - 兼容dict格式"""
+        """获取活跃账号 - 支持数据库和JSON两种模式"""
+        if self.use_database and hasattr(self, 'db_manager'):
+            try:
+                # 🚀 数据库模式：直接从数据库获取，性能更好
+                return self.db_manager.get_active_accounts()
+            except Exception as e:
+                self.logger.error(f"数据库获取活跃账号失败，回退到内存模式: {e}")
+                self.use_database = False
+        
+        # 🔄 内存模式：遍历内存缓存
         from .account_adapter import get_account_status_safely
         
         result = []
         for username, account_data in self.accounts.items():
             if get_account_status_safely(account_data) == 'active':
                 result.append(username)
+        return result
+    
+    def get_accounts_progress_batch(self, usernames: List[str], target_count: int = 1) -> Dict[str, Tuple[str, bool, int]]:
+        """批量获取账号进度 - 数据库优化版本"""
+        if self.use_database and hasattr(self, 'db_manager'):
+            try:
+                # 🚀 数据库模式：使用高性能批量查询
+                return self.db_manager.get_accounts_progress_batch(usernames, target_count)
+            except Exception as e:
+                self.logger.error(f"数据库批量获取进度失败: {e}")
+                self.use_database = False
+        
+        # 🔄 回退到单个查询模式（兼容性）
+        result = {}
+        for username in usernames:
+            try:
+                # 这里可以集成现有的进度查询逻辑
+                result[username] = ("0/1 🔄 进行中", False, 0)  # 简化版本
+            except Exception as e:
+                result[username] = ("获取失败", False, 0)
+        
         return result
     
     def login_account(self, username: str) -> bool:
