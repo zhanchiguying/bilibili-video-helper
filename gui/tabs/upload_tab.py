@@ -109,6 +109,36 @@ class UploadTab:
         account_layout.addStretch()
         settings_layout.addLayout(account_layout)
         
+        # 视频随机化策略选择
+        randomize_layout = QHBoxLayout()
+        randomize_layout.addWidget(QLabel("🎲 视频随机化策略:"))
+        
+        self.main_window.randomize_strategy_combo = QComboBox()
+        self.main_window.randomize_strategy_combo.addItems([
+            "random - 完全随机（推荐）",
+            "group - 分组随机（每10个一组）", 
+            "partial - 部分随机（70%改变）",
+            "none - 不随机（按文件名顺序）"
+        ])
+        self.main_window.randomize_strategy_combo.setToolTip(
+            "选择视频上传的随机化策略：\n"
+            "• 完全随机：最大化随机性，降低平台检测风险\n"
+            "• 分组随机：每10个视频一组，组内随机\n" 
+            "• 部分随机：70%位置改变，30%保持原顺序\n"
+            "• 不随机：按原始文件名顺序上传"
+        )
+        self.main_window.randomize_strategy_combo.currentTextChanged.connect(self._on_randomize_strategy_changed)
+        randomize_layout.addWidget(self.main_window.randomize_strategy_combo)
+        
+        # 添加策略说明标签
+        self.main_window.randomize_info_label = QLabel("💡 完全随机可有效降低平台检测风险")
+        self.main_window.randomize_info_label.setStyleSheet(
+            "color: #6c757d; font-size: 11px; font-style: italic; padding: 2px;"
+        )
+        randomize_layout.addWidget(self.main_window.randomize_info_label)
+        randomize_layout.addStretch()
+        settings_layout.addLayout(randomize_layout)
+        
         settings_group.setLayout(settings_layout)
         return settings_group
     
@@ -173,3 +203,69 @@ class UploadTab:
         
         control_group.setLayout(control_layout)
         return control_group 
+    
+    def _on_randomize_strategy_changed(self, text):
+        """随机化策略改变时的处理"""
+        try:
+            # 从UI文本中提取策略值
+            strategy_value = text.split(' - ')[0]  # 提取 "random", "group", "partial", "none"
+            
+            # 更新配置
+            config = self.main_window.core_app.config_manager.load_config()
+            if 'ui_settings' not in config:
+                config['ui_settings'] = {}
+            config['ui_settings']['randomize_strategy'] = strategy_value
+            
+            # 保存配置
+            self.main_window.core_app.config_manager.save_config(config)
+            
+            # 更新说明标签
+            strategy_info = {
+                'random': '💡 完全随机可有效降低平台检测风险',
+                'group': '💡 分组随机适合有序列要求的场景',
+                'partial': '💡 部分随机平衡随机性和连续性',
+                'none': '💡 不随机将按文件名顺序上传'
+            }
+            self.main_window.randomize_info_label.setText(strategy_info.get(strategy_value, '💡 策略已更新'))
+            
+            # 在日志中记录变更
+            self.main_window.log_message(f"🎲 视频随机化策略已更改为: {strategy_value}", "INFO")
+            
+        except Exception as e:
+            self.main_window.log_message(f"❌ 保存随机化策略失败: {e}", "ERROR")
+    
+    def load_randomize_strategy_from_config(self):
+        """从配置文件加载随机化策略设置到UI"""
+        try:
+            config = self.main_window.core_app.config_manager.load_config()
+            current_strategy = config.get('ui_settings', {}).get('randomize_strategy', 'random')
+            
+            # 映射策略值到UI显示文本
+            strategy_mapping = {
+                'random': 'random - 完全随机（推荐）',
+                'group': 'group - 分组随机（每10个一组）',
+                'partial': 'partial - 部分随机（70%改变）',
+                'none': 'none - 不随机（按文件名顺序）'
+            }
+            
+            display_text = strategy_mapping.get(current_strategy, 'random - 完全随机（推荐）')
+            
+            # 设置下拉框选中项（不触发信号，避免重复保存）
+            combo = self.main_window.randomize_strategy_combo
+            combo.blockSignals(True)
+            index = combo.findText(display_text)
+            if index >= 0:
+                combo.setCurrentIndex(index)
+            combo.blockSignals(False)
+            
+            # 更新说明标签
+            strategy_info = {
+                'random': '💡 完全随机可有效降低平台检测风险',
+                'group': '💡 分组随机适合有序列要求的场景',
+                'partial': '💡 部分随机平衡随机性和连续性',
+                'none': '💡 不随机将按文件名顺序上传'
+            }
+            self.main_window.randomize_info_label.setText(strategy_info.get(current_strategy, '💡 策略已加载'))
+            
+        except Exception as e:
+            self.main_window.log_message(f"❌ 加载随机化策略配置失败: {e}", "WARNING")

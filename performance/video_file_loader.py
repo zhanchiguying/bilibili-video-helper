@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 高性能视频文件加载器 v1.0
-支持增量扫描、智能缓存、后台加载
+支持增量扫描、智能缓存、后台加载、随机化
 专为大量视频文件场景优化
 """
 
@@ -10,6 +10,7 @@ import os
 import time
 import hashlib
 import threading
+import random  # 🎯 新增：支持随机化
 from pathlib import Path
 from dataclasses import dataclass
 from typing import List, Dict, Tuple, Optional, Callable
@@ -38,6 +39,71 @@ class ScanResult:
     total_size_mb: float
     scan_time: float
     from_cache: bool = False
+
+# 🎯 新增：视频随机化策略
+class VideoRandomizer:
+    """视频随机化管理器"""
+    
+    @staticmethod
+    def shuffle_videos(video_files: List[str], strategy: str = "random") -> List[str]:
+        """
+        打乱视频顺序
+        
+        Args:
+            video_files: 视频文件列表
+            strategy: 随机化策略
+                - "random": 完全随机
+                - "group": 分组随机（每10个一组）
+                - "partial": 部分随机（保留30%原顺序）
+                - "none": 不随机
+        
+        Returns:
+            打乱后的视频文件列表
+        """
+        if strategy == "none" or not video_files:
+            return video_files.copy()
+        
+        result = video_files.copy()
+        
+        if strategy == "random":
+            # 完全随机打乱
+            random.shuffle(result)
+            logger.info(f"🎲 完全随机化 {len(result)} 个视频")
+            
+        elif strategy == "group":
+            # 分组随机：每10个为一组，组内随机，组间顺序保持
+            group_size = 10
+            for i in range(0, len(result), group_size):
+                group = result[i:i+group_size]
+                random.shuffle(group)
+                result[i:i+group_size] = group
+            logger.info(f"🎲 分组随机化 {len(result)} 个视频（每组{group_size}个）")
+            
+        elif strategy == "partial":
+            # 部分随机：随机选择70%的视频进行位置交换
+            indices = list(range(len(result)))
+            swap_count = int(len(indices) * 0.7)
+            swap_indices = random.sample(indices, swap_count)
+            
+            # 成对交换
+            for i in range(0, len(swap_indices)-1, 2):
+                idx1, idx2 = swap_indices[i], swap_indices[i+1]
+                result[idx1], result[idx2] = result[idx2], result[idx1]
+            logger.info(f"🎲 部分随机化 {len(result)} 个视频（交换{swap_count//2}对）")
+        
+        return result
+    
+    @staticmethod
+    def get_randomization_info(original: List[str], shuffled: List[str]) -> str:
+        """获取随机化统计信息"""
+        if len(original) != len(shuffled):
+            return "❌ 列表长度不匹配"
+        
+        unchanged_count = sum(1 for i, (o, s) in enumerate(zip(original, shuffled)) if o == s)
+        changed_count = len(original) - unchanged_count
+        change_rate = (changed_count / len(original)) * 100 if original else 0
+        
+        return f"📊 随机化统计: {changed_count}/{len(original)} 位置改变 ({change_rate:.1f}%)"
 
 class VideoFileCache:
     """视频文件缓存管理器"""
@@ -421,4 +487,335 @@ class OptimizedVideoListManager:
         
     def is_loading(self) -> bool:
         """是否正在加载"""
-        return self.loader.is_scanning() 
+        return self.loader.is_scanning()
+
+# 🎯 新增：MD5缓存管理器
+class VideoMD5Cache:
+    """视频文件MD5缓存管理器 - 解决性能瓶颈"""
+    
+    def __init__(self, cache_duration: int = 3600):  # 1小时缓存
+        self.cache_duration = cache_duration
+        self._md5_cache: Dict[str, Tuple[str, float, float]] = {}  # {filepath: (md5, mtime, cache_time)}
+        self._lock = threading.Lock()
+        
+    def get_file_md5(self, file_path: str) -> Optional[str]:
+        """
+        获取文件MD5，优先使用缓存
+        
+        Args:
+            file_path: 文件路径
+            
+        Returns:
+            MD5值或None
+        """
+        try:
+            with self._lock:
+                # 检查文件是否存在
+                if not os.path.exists(file_path):
+                    return None
+                
+                # 获取文件修改时间
+                current_mtime = os.path.getmtime(file_path)
+                current_time = time.time()
+                
+                # 检查缓存
+                if file_path in self._md5_cache:
+                    cached_md5, cached_mtime, cache_time = self._md5_cache[file_path]
+                    
+                    # 验证缓存有效性
+                    if (abs(current_mtime - cached_mtime) < 1.0 and  # 文件未修改
+                        current_time - cache_time < self.cache_duration):  # 缓存未过期
+                        logger.debug(f"📊 MD5缓存命中: {os.path.basename(file_path)}")
+                        return cached_md5
+                
+                # 缓存失效，重新计算MD5
+                logger.info(f"🔢 计算MD5: {os.path.basename(file_path)}")
+                md5_hash = self._calculate_md5(file_path)
+                
+                if md5_hash:
+                    # 更新缓存
+                    self._md5_cache[file_path] = (md5_hash, current_mtime, current_time)
+                    
+                    # 清理过期缓存
+                    self._cleanup_expired_cache()
+                
+                return md5_hash
+                
+        except Exception as e:
+            logger.error(f"获取MD5失败: {file_path} - {e}")
+            return None
+    
+    def _calculate_md5(self, file_path: str) -> Optional[str]:
+        """计算文件MD5值"""
+        try:
+            hash_md5 = hashlib.md5()
+            with open(file_path, "rb") as f:
+                for chunk in iter(lambda: f.read(8192), b""):  # 8KB chunks
+                    hash_md5.update(chunk)
+            return hash_md5.hexdigest()
+        except Exception as e:
+            logger.error(f"计算MD5异常: {file_path} - {e}")
+            return None
+    
+    def _cleanup_expired_cache(self):
+        """清理过期缓存"""
+        current_time = time.time()
+        expired_keys = []
+        
+        for file_path, (_, _, cache_time) in self._md5_cache.items():
+            if current_time - cache_time > self.cache_duration:
+                expired_keys.append(file_path)
+        
+        for key in expired_keys:
+            del self._md5_cache[key]
+        
+        if expired_keys:
+            logger.info(f"🧹 清理过期MD5缓存: {len(expired_keys)} 个条目")
+    
+    def clear_cache(self, file_path: str = None):
+        """清除缓存"""
+        with self._lock:
+            if file_path:
+                self._md5_cache.pop(file_path, None)
+                logger.info(f"🧹 清除MD5缓存: {os.path.basename(file_path)}")
+            else:
+                cache_count = len(self._md5_cache)
+                self._md5_cache.clear()
+                logger.info(f"🧹 清除全部MD5缓存: {cache_count} 个条目")
+    
+    def get_cache_stats(self) -> str:
+        """获取缓存统计信息"""
+        with self._lock:
+            cache_count = len(self._md5_cache)
+            return f"📊 MD5缓存: {cache_count} 个文件"
+
+# 全局MD5缓存实例
+_global_md5_cache = VideoMD5Cache()
+
+def get_global_md5_cache() -> VideoMD5Cache:
+    """获取全局MD5缓存实例"""
+    return _global_md5_cache 
+
+# 🎯 核心解决方案：视频上传协调器
+class VideoUploadCoordinator:
+    """视频上传协调器 - 解决时序、重复上传、代码分散问题"""
+    
+    def __init__(self):
+        self._upload_locks: Dict[str, threading.Lock] = {}  # 文件级别锁
+        self._global_lock = threading.Lock()
+        self.md5_cache = get_global_md5_cache()
+    
+    def safe_upload_video(self, video_path: str, account_name: str, uploader, 
+                         browser, product_info: dict, upload_thread) -> Tuple[bool, str]:
+        """
+        安全的视频上传流程 - 解决所有已知问题
+        
+        Returns:
+            (success, message)
+        """
+        filename = os.path.basename(video_path)
+        
+        # 🔒 步骤1：获取文件级别的锁，防止重复上传
+        file_lock = self._get_file_lock(video_path)
+        
+        try:
+            # 非阻塞获取锁，如果获取失败说明其他线程正在处理
+            if not file_lock.acquire(blocking=False):
+                return False, f"视频 {filename} 正在被其他账号处理"
+            
+            # 🔍 步骤2：在锁保护下再次检查视频状态
+            md5_hash = self.md5_cache.get_file_md5(video_path)
+            if not md5_hash:
+                return False, f"无法计算文件MD5: {filename}"
+            
+            # 检查是否已上传（在锁保护下）
+            try:
+                from database.database_manager import db_manager
+                if db_manager.is_video_uploaded(md5_hash):
+                    return False, f"视频 {filename} 已被上传，跳过"
+            except Exception as e:
+                return False, f"检查上传状态失败: {e}"
+            
+            upload_thread.upload_status.emit(f"🔒 [{account_name}] 获得视频上传锁: {filename}")
+            
+            # 🚀 步骤3：执行上传（同步等待完成）
+            upload_result = self._perform_synchronized_upload(
+                video_path, account_name, uploader, browser, product_info, upload_thread
+            )
+            
+            if upload_result['success']:
+                # 📊 步骤4：原子性更新数据库和删除文件
+                if self._atomic_complete_upload(video_path, account_name, upload_result['product_id'], upload_thread):
+                    return True, f"视频 {filename} 上传并删除成功"
+                else:
+                    return False, f"视频 {filename} 上传成功但后处理失败"
+            else:
+                return False, f"视频 {filename} 上传失败: {upload_result['error']}"
+        
+        finally:
+            # 🔓 释放文件锁
+            try:
+                file_lock.release()
+                upload_thread.upload_status.emit(f"🔓 [{account_name}] 释放视频上传锁: {filename}")
+            except:
+                pass
+    
+    def _get_file_lock(self, video_path: str) -> threading.Lock:
+        """获取文件级别的锁"""
+        with self._global_lock:
+            if video_path not in self._upload_locks:
+                self._upload_locks[video_path] = threading.Lock()
+            return self._upload_locks[video_path]
+    
+    def _perform_synchronized_upload(self, video_path: str, account_name: str, 
+                                   uploader, browser, product_info: dict, 
+                                   upload_thread) -> dict:
+        """执行同步上传，等待完成"""
+        import threading
+        
+        result = {'success': False, 'error': '', 'product_id': ''}
+        upload_complete_event = threading.Event()
+        
+        # 同步回调函数
+        def sync_success_callback():
+            try:
+                filename = os.path.basename(video_path)
+                from core.bilibili_product_manager import get_product_manager
+                product_manager = get_product_manager()
+                product_id = product_manager.extract_product_id_from_filename(filename)
+                
+                result['success'] = True
+                result['product_id'] = product_id
+                upload_thread.upload_status.emit(f"✅ [{account_name}] 视频上传完成: {filename}")
+                
+                # 🔧 关键修复：在VideoUploadCoordinator的回调中返回True，避免uploader认为失败
+                return True
+                
+            except Exception as e:
+                result['error'] = f"回调处理异常: {e}"
+                upload_thread.upload_status.emit(f"❌ [{account_name}] 回调异常: {e}")
+                return False
+            finally:
+                upload_complete_event.set()
+        
+        try:
+            # 🔧 关键修复：清除任何现有的回调，避免冲突
+            old_callback = getattr(uploader, 'success_callback', None)
+            if old_callback:
+                upload_thread.upload_status.emit(f"🔧 [{account_name}] 发现现有回调，清除以避免重复调用")
+            
+            # 🔧 强制清除任何可能的回调
+            uploader.success_callback = None
+            upload_thread.upload_status.emit(f"🔧 [{account_name}] 回调已清除，设置VideoUploadCoordinator专用回调")
+            
+            # 设置同步回调
+            uploader.success_callback = sync_success_callback
+            
+            # 1. 上传视频文件
+            need_popup_handling = account_name not in getattr(upload_thread, 'account_popup_handled', {})
+            if not uploader.upload_video(browser, video_path, account_name, need_popup_handling):
+                result['error'] = "视频文件上传失败"
+                return result
+            
+            # 标记弹窗已处理
+            if need_popup_handling:
+                if not hasattr(upload_thread, 'account_popup_handled'):
+                    upload_thread.account_popup_handled = {}
+                upload_thread.account_popup_handled[account_name] = True
+            
+            # 2. 填写视频信息
+            filename = os.path.basename(video_path)
+            filename_without_ext = filename.rsplit('.', 1)[0]
+            if '----' in filename_without_ext:
+                extracted_title = filename_without_ext.split('----', 1)[1]
+            else:
+                extracted_title = filename_without_ext
+            
+            upload_settings = {
+                "title": extracted_title,
+                "tags": ["带货", "推荐"],
+                "description": f"优质商品推荐: {product_info.get('goodsName', '精选商品')}",
+                "title_template": "{filename}"
+            }
+            
+            if not uploader.fill_video_info(browser, filename, upload_settings, product_info):
+                result['error'] = "填写视频信息失败"
+                return result
+            
+            # 3. 添加商品
+            if not uploader.add_product_to_video(browser, filename, product_info):
+                result['error'] = "添加商品失败"
+                return result
+            
+            # 4. 发布视频并等待完成
+            if not uploader.publish_video(browser, account_name):
+                result['error'] = "发布视频失败"
+                return result
+            
+            # 🎯 关键：等待回调完成（最多等待30秒）
+            if upload_complete_event.wait(timeout=30):
+                if not result['success']:
+                    result['error'] = result.get('error', '未知错误')
+            else:
+                result['error'] = "上传超时（30秒）"
+            
+            return result
+            
+        except Exception as e:
+            result['error'] = f"上传过程异常: {e}"
+            return result
+        finally:
+            # 🔧 强化清理回调，确保不影响后续使用
+            try:
+                uploader.success_callback = None
+                upload_thread.upload_status.emit(f"🔧 [{account_name}] VideoUploadCoordinator回调已清理")
+            except Exception as e:
+                upload_thread.upload_status.emit(f"⚠️ [{account_name}] 清理回调时异常: {e}")
+                pass
+    
+    def _atomic_complete_upload(self, video_path: str, account_name: str, 
+                              product_id: str, upload_thread) -> bool:
+        """原子性完成上传：更新数据库 + 删除文件"""
+        try:
+            # 🎯 步骤1：更新数据库
+            success = upload_thread.mark_video_uploaded(video_path, account_name, product_id)
+            if not success:
+                upload_thread.upload_status.emit(f"❌ [{account_name}] 数据库更新失败")
+                return False
+            
+            # 🎯 步骤2：删除文件
+            if upload_thread.delete_video_file(video_path):
+                upload_thread.upload_status.emit(f"🗑️ [{account_name}] 文件删除成功")
+                
+                # 🎯 步骤3：发送界面更新信号
+                upload_thread.account_progress_updated.emit(account_name)
+                return True
+            else:
+                upload_thread.upload_status.emit(f"⚠️ [{account_name}] 文件删除失败")
+                return False
+                
+        except Exception as e:
+            upload_thread.upload_status.emit(f"❌ [{account_name}] 完成上传时异常: {e}")
+            return False
+    
+    def clear_completed_locks(self):
+        """清理已完成的文件锁"""
+        with self._global_lock:
+            # 清理不存在文件的锁
+            to_remove = []
+            for video_path in self._upload_locks:
+                if not os.path.exists(video_path):
+                    to_remove.append(video_path)
+            
+            for path in to_remove:
+                del self._upload_locks[path]
+            
+            if to_remove:
+                logger.info(f"🧹 清理文件锁: {len(to_remove)} 个")
+
+# 全局上传协调器实例
+_global_upload_coordinator = VideoUploadCoordinator()
+
+def get_global_upload_coordinator() -> VideoUploadCoordinator:
+    """获取全局上传协调器实例"""
+    return _global_upload_coordinator 

@@ -84,43 +84,117 @@ class BrowserUploadThread(QThread):
         self.is_stopped = True
         
     def mark_video_uploaded(self, file_path, account, product_id):
-        """标记视频已上传 - 数据库版本"""
+        """标记视频已上传 - 数据库版本，增强错误处理"""
         import hashlib
         import os
         from datetime import datetime
         
-        # 计算文件MD5
-        hash_md5 = hashlib.md5()
         try:
-            with open(file_path, "rb") as f:
-                for chunk in iter(lambda: f.read(4096), b""):
-                    hash_md5.update(chunk)
-            md5_hash = hash_md5.hexdigest()
-        except Exception as e:
-            self.upload_status.emit(f"❌ 无法计算文件MD5: {os.path.basename(file_path)} - {e}")
-            return False
-        
-        try:
-            # 使用数据库记录
-            from database.database_manager import db_manager
-            success = db_manager.add_uploaded_video(
-                md5_hash=md5_hash,
-                filename=os.path.basename(file_path),
-                account_username=account,
-                upload_date=datetime.now().strftime("%Y-%m-%d"),
-                product_id=product_id,
-                file_size=os.path.getsize(file_path) if os.path.exists(file_path) else 0
-            )
+            # 🔍 步骤1：验证文件存在性
+            if not os.path.exists(file_path):
+                self.upload_status.emit(f"❌ 文件不存在: {os.path.basename(file_path)}")
+                return False
             
-            if success:
-                self.upload_status.emit(f"📊 数据库记录上传: {os.path.basename(file_path)}")
-                return True
-            else:
-                self.upload_status.emit(f"❌ 数据库记录失败: {os.path.basename(file_path)}")
+            # 🔍 步骤2：计算文件MD5（增强错误处理）
+            self.upload_status.emit(f"🔍 开始计算MD5: {os.path.basename(file_path)}")
+            hash_md5 = hashlib.md5()
+            try:
+                file_size = os.path.getsize(file_path)
+                self.upload_status.emit(f"📊 文件大小: {file_size} 字节")
+                
+                with open(file_path, "rb") as f:
+                    for chunk in iter(lambda: f.read(4096), b""):
+                        hash_md5.update(chunk)
+                
+                md5_hash = hash_md5.hexdigest()
+                self.upload_status.emit(f"✅ MD5计算完成: {md5_hash[:8]}...")
+                
+            except PermissionError:
+                self.upload_status.emit(f"❌ 文件权限错误，无法读取: {os.path.basename(file_path)}")
+                return False
+            except IOError as e:
+                self.upload_status.emit(f"❌ 文件读取错误: {os.path.basename(file_path)} - {e}")
+                return False
+            except Exception as e:
+                self.upload_status.emit(f"❌ MD5计算异常: {os.path.basename(file_path)} - {e}")
+                return False
+        
+            # 🔍 步骤3：数据库记录（增强错误处理和重试机制）
+            try:
+                self.upload_status.emit(f"📊 开始数据库记录: 账号={account}, 商品ID={product_id}")
+                
+                # 导入数据库管理器
+                from database.database_manager import db_manager
+                
+                # 检查数据库连接
+                self.upload_status.emit(f"🔍 检查数据库连接...")
+                try:
+                    # 测试数据库连接
+                    with db_manager.get_connection() as test_conn:
+                        test_cursor = test_conn.cursor()
+                        test_cursor.execute("SELECT 1")
+                        test_result = test_cursor.fetchone()
+                        if test_result:
+                            self.upload_status.emit(f"✅ 数据库连接正常")
+                        else:
+                            self.upload_status.emit(f"❌ 数据库连接测试失败")
+                            return False
+                except Exception as conn_e:
+                    self.upload_status.emit(f"❌ 数据库连接失败: {conn_e}")
+                    return False
+                
+                # 尝试添加记录（最多重试3次）
+                for attempt in range(3):
+                    self.upload_status.emit(f"🔄 数据库记录尝试 {attempt + 1}/3")
+                    
+                    success = db_manager.add_uploaded_video(
+                        md5_hash=md5_hash,
+                        filename=os.path.basename(file_path),
+                        account_username=account,
+                        upload_date=datetime.now().strftime("%Y-%m-%d"),
+                        product_id=product_id,
+                        file_size=file_size
+                    )
+                    
+                    if success:
+                        self.upload_status.emit(f"✅ 数据库记录成功: {os.path.basename(file_path)}")
+                        return True
+                    else:
+                        self.upload_status.emit(f"⚠️ 数据库记录失败，尝试 {attempt + 1}/3")
+                        if attempt < 2:  # 不是最后一次尝试
+                            import time
+                            time.sleep(1)  # 等待1秒后重试
+                
+                # 所有重试都失败
+                self.upload_status.emit(f"❌ 数据库记录失败: 所有重试都失败")
+                
+                # 🔍 尝试手动检查是否已记录
+                try:
+                    if db_manager.is_video_uploaded(md5_hash):
+                        self.upload_status.emit(f"🔍 检查发现视频已在数据库中，可能是重复记录")
+                        return True
+                    else:
+                        self.upload_status.emit(f"🔍 确认视频未在数据库中")
+                except Exception as check_e:
+                    self.upload_status.emit(f"⚠️ 无法检查视频状态: {check_e}")
+                
+                return False
+                
+            except ImportError:
+                self.upload_status.emit(f"❌ 无法导入数据库管理器")
+                return False
+            except Exception as db_e:
+                import traceback
+                error_trace = traceback.format_exc()
+                self.upload_status.emit(f"❌ 数据库操作异常: {db_e}")
+                self.upload_status.emit(f"❌ 异常详情: {error_trace}")
                 return False
                 
         except Exception as e:
-            self.upload_status.emit(f"❌ 数据库记录失败: {os.path.basename(file_path)} - {e}")
+            import traceback
+            error_trace = traceback.format_exc()
+            self.upload_status.emit(f"❌ mark_video_uploaded 总体异常: {e}")
+            self.upload_status.emit(f"❌ 异常详情: {error_trace}")
             return False
         
     def run(self):
@@ -327,11 +401,16 @@ class BatchUploadThread(QThread):
         try:
             from core.bilibili_video_uploader import BilibiliVideoUploader
             self.shared_uploader = BilibiliVideoUploader(self.upload_status.emit, self.core_app.config_manager)
+            # 🔧 关键修复：确保没有遗留的回调
+            self.shared_uploader.success_callback = None
         except ImportError:
             # 后备方案：使用工厂函数
             try:
                 from core.bilibili_video_uploader import create_uploader
                 self.shared_uploader = create_uploader(self.upload_status.emit, self.core_app.config_manager)
+                # 🔧 关键修复：确保没有遗留的回调
+                if self.shared_uploader:
+                    self.shared_uploader.success_callback = None
             except ImportError:
                 self.shared_uploader = None
         
@@ -395,7 +474,7 @@ class BatchUploadThread(QThread):
             
             # 获取所有上传记录（这里可以优化为按需加载）
             # 但为了兼容现有的MD5检查逻辑，暂时全量加载
-            # TODO: 后续可以改为直接调用db_manager.is_video_uploaded()
+            # 数据库模式：直接查询数据库获取上传记录
             
             self.upload_status.emit("📊 从数据库加载上传记录...")
             return uploaded_videos  # 暂时返回空字典，依赖数据库查询
@@ -411,16 +490,9 @@ class BatchUploadThread(QThread):
         pass
     
     def get_file_md5(self, file_path):
-        """计算文件MD5值"""
-        import hashlib
-        hash_md5 = hashlib.md5()
-        try:
-            with open(file_path, "rb") as f:
-                for chunk in iter(lambda: f.read(4096), b""):
-                    hash_md5.update(chunk)
-            return hash_md5.hexdigest()
-        except:
-            return None
+        """获取文件MD5值 - 使用缓存优化"""
+        from performance.video_file_loader import get_global_md5_cache
+        return get_global_md5_cache().get_file_md5(file_path)
     
     def is_video_uploaded(self, file_path):
         """检查视频是否已上传 - SQLite增强版"""
@@ -437,38 +509,106 @@ class BatchUploadThread(QThread):
             return md5_hash in self.uploaded_videos_md5
     
     def mark_video_uploaded(self, file_path, account, product_id):
-        """标记视频已上传 - SQLite增强版"""
-        md5_hash = self.get_file_md5(file_path)
-        if not md5_hash:
-            self.upload_status.emit(f"❌ 无法计算文件MD5: {os.path.basename(file_path)}")
-            return False
-        
-        from datetime import datetime
-        
+        """标记视频已上传 - SQLite增强版，添加详细调试"""
         try:
-            # 🚀 优先使用数据库记录
-            from database.database_manager import db_manager
-            success = db_manager.add_uploaded_video(
-                md5_hash=md5_hash,
-                filename=os.path.basename(file_path),
-                account_username=account,
-                upload_date=datetime.now().strftime("%Y-%m-%d"),
-                product_id=product_id,
-                file_size=os.path.getsize(file_path) if os.path.exists(file_path) else 0
-            )
+            self.upload_status.emit(f"🔍 [{account}] 开始标记视频上传: {os.path.basename(file_path)}")
             
-            if success:
-                self.upload_status.emit(f"📊 数据库记录上传: {os.path.basename(file_path)}")
-                # 🎯 关键修复：只有数据库记录成功才清除进度缓存
-                self._clear_progress_cache()
-                return True
-            else:
-                self.upload_status.emit(f"❌ 数据库记录失败: {os.path.basename(file_path)}")
+            # 步骤1：验证文件存在性
+            if not os.path.exists(file_path):
+                self.upload_status.emit(f"❌ [{account}] 文件不存在: {os.path.basename(file_path)}")
+                return False
+            
+            # 步骤2：计算MD5
+            md5_hash = self.get_file_md5(file_path)
+            if not md5_hash:
+                self.upload_status.emit(f"❌ [{account}] 无法计算文件MD5: {os.path.basename(file_path)}")
+                return False
+            
+            self.upload_status.emit(f"✅ [{account}] MD5计算完成: {md5_hash[:8]}...")
+            
+            from datetime import datetime
+            
+            # 步骤3：数据库记录（增强版）
+            try:
+                # 导入并测试数据库连接
+                from database.database_manager import db_manager
+                self.upload_status.emit(f"🔍 [{account}] 检查数据库连接...")
+                
+                # 测试连接
+                try:
+                    with db_manager.get_connection() as test_conn:
+                        test_cursor = test_conn.cursor()
+                        test_cursor.execute("SELECT 1")
+                        if test_cursor.fetchone():
+                            self.upload_status.emit(f"✅ [{account}] 数据库连接正常")
+                        else:
+                            self.upload_status.emit(f"❌ [{account}] 数据库连接测试失败")
+                            return False
+                except Exception as conn_e:
+                    self.upload_status.emit(f"❌ [{account}] 数据库连接失败: {conn_e}")
+                    return False
+                
+                # 重试机制添加记录
+                for attempt in range(3):
+                    self.upload_status.emit(f"🔄 [{account}] 数据库记录尝试 {attempt + 1}/3")
+                    
+                    try:
+                        file_size = os.path.getsize(file_path)
+                        success = db_manager.add_uploaded_video(
+                            md5_hash=md5_hash,
+                            filename=os.path.basename(file_path),
+                            account_username=account,
+                            upload_date=datetime.now().strftime("%Y-%m-%d"),
+                            product_id=product_id,
+                            file_size=file_size
+                        )
+                        
+                        if success:
+                            self.upload_status.emit(f"✅ [{account}] 数据库记录成功: {os.path.basename(file_path)}")
+                            # 🎯 关键修复：只有数据库记录成功才清除进度缓存
+                            self._clear_progress_cache()
+                            return True
+                        else:
+                            self.upload_status.emit(f"⚠️ [{account}] 数据库记录失败，尝试 {attempt + 1}/3")
+                            if attempt < 2:  # 不是最后一次尝试
+                                import time
+                                time.sleep(1)  # 等待1秒后重试
+                    except Exception as record_e:
+                        self.upload_status.emit(f"⚠️ [{account}] 记录异常: {record_e}")
+                        if attempt < 2:
+                            import time
+                            time.sleep(1)
+                
+                # 所有重试都失败，尝试检查是否已存在
+                self.upload_status.emit(f"❌ [{account}] 数据库记录失败: 所有重试都失败")
+                
+                try:
+                    if db_manager.is_video_uploaded(md5_hash):
+                        self.upload_status.emit(f"🔍 [{account}] 检查发现视频已在数据库中，可能是重复记录")
+                        self._clear_progress_cache()
+                        return True
+                    else:
+                        self.upload_status.emit(f"🔍 [{account}] 确认视频未在数据库中")
+                except Exception as check_e:
+                    self.upload_status.emit(f"⚠️ [{account}] 无法检查视频状态: {check_e}")
+                
                 return False
                 
+            except ImportError:
+                self.upload_status.emit(f"❌ [{account}] 无法导入数据库管理器")
+                return False
+            except Exception as db_e:
+                import traceback
+                error_trace = traceback.format_exc()
+                self.upload_status.emit(f"❌ [{account}] 数据库操作异常: {db_e}")
+                self.upload_status.emit(f"❌ [{account}] 异常详情: {error_trace}")
+                return False
+        
         except Exception as e:
-            # ❌ 数据库失败，记录详细错误
-            self.upload_status.emit(f"❌ 数据库记录失败: {os.path.basename(file_path)} - {e}")
+            import traceback
+            error_trace = traceback.format_exc()
+            self.upload_status.emit(f"❌ [{account}] mark_video_uploaded 总体异常: {e}")
+            self.upload_status.emit(f"❌ [{account}] 异常详情: {error_trace}")
             return False
 
     def _clear_progress_cache(self):
@@ -525,6 +665,7 @@ class BatchUploadThread(QThread):
             # 🎯 增强异常处理：捕获所有可能的异常，防止程序意外退出
             from core.bilibili_product_manager import get_product_manager
             from queue import Queue
+            import random
             
             product_manager = get_product_manager()
             
@@ -545,18 +686,83 @@ class BatchUploadThread(QThread):
             
             # 获取所有未上传的视频文件
             available_videos = []
+            self.upload_status.emit("🔍 正在快速扫描视频文件...")
+            
+            # 🎯 性能优化：批量检查上传状态，减少数据库查询
+            video_md5_cache = {}  # 缓存MD5值，避免重复计算
+            
             for video_file in self.video_files:
                 filename = os.path.basename(video_file)
-                is_uploaded = self.is_video_uploaded(video_file)
-                if not is_uploaded:
+                
+                # 🎯 优化：先检查文件是否存在，避免无效计算
+                if not os.path.exists(video_file):
+                    self.upload_status.emit(f"⏭️ 文件不存在跳过: {filename}")
+                    continue
+                
+                # 🎯 优化：使用缓存的MD5值或快速计算
+                try:
+                    # 快速检查：如果文件很小或已在缓存中，直接处理
+                    file_size = os.path.getsize(video_file)
+                    if file_size < 10 * 1024 * 1024:  # 小于10MB的文件快速处理
+                        is_uploaded = self.is_video_uploaded(video_file)
+                    else:
+                        # 大文件使用文件修改时间作为快速检查
+                        mtime = os.path.getmtime(video_file)
+                        cache_key = f"{video_file}_{mtime}_{file_size}"
+                        
+                        if cache_key in video_md5_cache:
+                            is_uploaded = video_md5_cache[cache_key]
+                        else:
+                            is_uploaded = self.is_video_uploaded(video_file)
+                            video_md5_cache[cache_key] = is_uploaded
+                
+                    if not is_uploaded:
+                        available_videos.append(video_file)
+                        self.upload_status.emit(f"📹 待上传: {filename}")
+                    else:
+                        self.upload_status.emit(f"⏭️ 已上传跳过: {filename}")
+                        
+                except Exception as e:
+                    # 如果检查失败，保守地认为未上传
                     available_videos.append(video_file)
-                    self.upload_status.emit(f"📹 待上传: {filename}")
-                else:
-                    self.upload_status.emit(f"⏭️ 已上传跳过: {filename}")
+                    self.upload_status.emit(f"⚠️ 检查失败，加入队列: {filename}")
             
             if not available_videos:
                 self.upload_finished.emit(False, "没有可上传的新视频")
                 return
+            
+            # 🎯 新功能：使用高级视频随机化策略
+            from performance.video_file_loader import VideoRandomizer
+            
+            # 从配置文件读取随机化策略
+            randomize_strategy = self.core_app.config_manager.load_config().get('ui_settings', {}).get('randomize_strategy', 'random')
+            
+            # 验证随机化策略配置
+            valid_strategies = ['random', 'group', 'partial', 'none']
+            if randomize_strategy not in valid_strategies:
+                self.upload_status.emit(f"⚠️ 无效的随机化策略 '{randomize_strategy}'，使用默认策略 'random'")
+                self.upload_status.emit(f"💡 可选策略: {', '.join(valid_strategies)}")
+                randomize_strategy = 'random'
+            
+            # 输出当前使用的策略
+            strategy_descriptions = {
+                'random': '完全随机 - 最大化随机性',
+                'group': '分组随机 - 每10个一组内部随机',
+                'partial': '部分随机 - 70%位置改变',
+                'none': '不随机 - 保持文件名顺序'
+            }
+            self.upload_status.emit(f"🎲 随机化策略: {randomize_strategy} ({strategy_descriptions.get(randomize_strategy, '未知')})")
+            
+            if randomize_strategy != 'none':
+                original_videos = available_videos.copy()
+                available_videos = VideoRandomizer.shuffle_videos(available_videos, randomize_strategy)
+                
+                # 输出随机化统计信息
+                stats_info = VideoRandomizer.get_randomization_info(original_videos, available_videos)
+                self.upload_status.emit(f"🔀 视频随机化完成: 策略={randomize_strategy}")
+                self.upload_status.emit(f"📊 {stats_info}")
+            else:
+                self.upload_status.emit(f"📋 保持原始文件顺序上传")
             
             self.upload_status.emit(f"📹 找到 {len(available_videos)} 个待上传视频")
             
@@ -670,24 +876,14 @@ class BatchUploadThread(QThread):
                     consecutive_empty_queue_count = 0  # 🎯 新增：连续空队列计数
                     max_empty_queue_retries = 10  # 🎯 最多重试10次（避免无限等待）
                     
-                    while videos_processed_by_account < self.videos_per_account:
-                        if self.is_stopped:
+                    # 🎯 修复：添加明确的成功上传计数检查，避免因商品验证失败提前退出
+                    while uploaded_count < self.videos_per_account:
+                        # 🎯 关键修复：检查是否已达到目标上传数量
+                        if uploaded_count >= self.videos_per_account:
+                            self.upload_status.emit(f"🎉 [{account}] 已成功上传 {uploaded_count}/{self.videos_per_account} 个视频，完成任务")
                             break
                         
-                        # 🎯 修复：每个视频处理前检查账号是否已达目标（绕过缓存）
-                        try:
-                            # 🎯 关键修复：直接使用数据库查询，绕过缓存
-                            from database.database_manager import db_manager
-                            status, completed, published = db_manager.get_account_progress(account, self.videos_per_account)
-                                
-                            if completed:
-                                self.upload_status.emit(f"⏭️ [{account}] 视频处理前检查发现已完成目标 ({status})，停止处理")
-                                break
-                        except Exception as e:
-                            self.upload_status.emit(f"⚠️ [{account}] 视频前状态检查失败: {e}")
-                        
-                        # 🎯 修复：改进视频队列获取逻辑，支持等待
-                        video_path = None
+                        # 从队列获取视频
                         try:
                             video_path = video_queue.get_nowait()
                             consecutive_empty_queue_count = 0  # 重置计数器
@@ -701,7 +897,7 @@ class BatchUploadThread(QThread):
                                 time.sleep(2)  # 等待2秒后重试
                                 continue
                             else:
-                                self.upload_status.emit(f"🏁 [{account}] 视频队列持续为空，所有视频已被其他账号处理完毕")
+                                self.upload_status.emit(f"⚠️ [{account}] 视频队列持续为空，但只成功上传了 {uploaded_count}/{self.videos_per_account} 个视频")
                                 break
                         
                         if not video_path:
@@ -716,67 +912,57 @@ class BatchUploadThread(QThread):
                         # 实时验证商品
                         product_id = product_manager.extract_product_id_from_filename(filename)
                         if not product_id:
-                            self.upload_status.emit(f"❌ [{account}] {filename} 无商品ID，删除")
+                            self.upload_status.emit(f"❌ [{account}] {filename} 无商品ID，删除继续下一个")
                             if self.delete_video_file(video_path):
                                 deleted_videos += 1
-                            continue
+                            continue  # 🎯 继续尝试下一个视频
                         
                         # 验证商品是否在B站联盟库中
                         cookies = product_manager.get_cookies_from_account(account_obj)
                         if not cookies:
-                            self.upload_status.emit(f"❌ [{account}] 无法获取Cookie")
-                            continue
+                            self.upload_status.emit(f"❌ [{account}] 无法获取Cookie，跳过此视频")
+                            continue  # 🎯 继续尝试下一个视频
                         
                         jd_url = product_manager.build_jd_url(product_id)
                         success, product_info = product_manager.distinguish_product(jd_url, cookies)
                         
                         if not success or not product_info:
-                            self.upload_status.emit(f"❌ [{account}] 商品{product_id}不在库中，删除{filename}")
+                            self.upload_status.emit(f"❌ [{account}] 商品{product_id}不在库中，删除{filename}继续下一个")
                             if self.delete_video_file(video_path):
                                 deleted_videos += 1
-                            continue
+                            continue  # 🎯 关键修复：继续尝试下一个视频
                         
                         # 商品验证通过，开始上传
                         self.upload_status.emit(f"🚀 [{account}] 上传第{videos_processed_by_account}个视频: {filename}")
                         
-                        # 调用实际上传逻辑
-                        upload_success = self.perform_actual_upload(account_obj, browser, video_path, product_info)
+                        # 🎯 使用安全的上传协调器替换原有逻辑
+                        from performance.video_file_loader import get_global_upload_coordinator
+                        coordinator = get_global_upload_coordinator()
+                        
+                        upload_success, upload_message = coordinator.safe_upload_video(
+                            video_path, account, self.shared_uploader, browser, product_info, self
+                        )
                         
                         if upload_success:
-                            # 🎯 优化：数据库更新和界面刷新已在uploader的回调中完成
-                            # 这里只需要处理成功后的流程
                             successful_uploads += 1
-                            uploaded_count += 1
+                            uploaded_count += 1  # 🎯 关键修复：只有真正成功上传才增加计数
+                            deleted_videos += 1  # 协调器内部已处理删除
+                            self.upload_status.emit(f"✅ [{account}] 第{uploaded_count}个成功: {upload_message} (总进度: {uploaded_count}/{self.videos_per_account})")
                             
-                            # 🎯 修复：投稿成功后立即删除视频文件，避免重复上传
-                            if self.delete_video_file(video_path):
-                                deleted_videos += 1
-                                self.upload_status.emit(f"✅ [{account}] 第{videos_processed_by_account}个视频成功: {filename} (文件已删除)")
+                            # 🎯 简化：直接检查本地计数器而不依赖数据库
+                            if uploaded_count >= self.videos_per_account:
+                                self.upload_status.emit(f"🎉 [{account}] 已完成当日目标 ({uploaded_count}/{self.videos_per_account})，停止继续上传")
+                                break  # 🎯 达到目标，退出该账号的上传循环
                             else:
-                                self.upload_status.emit(f"✅ [{account}] 第{videos_processed_by_account}个视频成功: {filename} (文件删除失败)")
-                            
-                            # 🎯 修复：检查账号是否已完成当日目标（绕过缓存）
-                            try:
-                                # 🎯 关键修复：直接使用数据库查询，绕过缓存
-                                from database.database_manager import db_manager
-                                status, completed, published = db_manager.get_account_progress(account, self.videos_per_account)
-                                    
-                                if completed:
-                                    self.upload_status.emit(f"🎉 [{account}] 已完成当日目标 ({published}/{self.videos_per_account})，停止继续上传")
-                                    break  # 跳出视频循环，该账号完成任务
-                                else:
-                                    self.upload_status.emit(f"📊 [{account}] 当前进度: {status}")
-                            except Exception as e:
-                                self.upload_status.emit(f"⚠️ [{account}] 检查完成状态失败: {e}")
+                                self.upload_status.emit(f"📊 [{account}] 当前进度: {uploaded_count}/{self.videos_per_account} 进行中")
                         else:
-                            self.upload_status.emit(f"❌ [{account}] 第{videos_processed_by_account}个视频失败: {filename}")
+                            self.upload_status.emit(f"⚠️ [{account}] 第{videos_processed_by_account}个视频失败: {upload_message}，继续下一个")
                         
                         # 更新进度
                         progress = int((processed_videos / total_videos) * 100)
                         self.upload_progress.emit(progress)
                         
-                        # 🎯 修复：不立即退出，继续处理下一个视频
-                        # 每个视频完成后短暂休息，让界面更新
+                        # 🎯 每个视频完成后短暂休息，让界面更新
                         time.sleep(1)
                         
                         # 🎯 每5个视频后重新导航到上传页面，保持浏览器状态
@@ -788,7 +974,7 @@ class BatchUploadThread(QThread):
                             except Exception as refresh_error:
                                 self.upload_status.emit(f"⚠️ [{account}] 刷新浏览器失败: {refresh_error}")
                         
-                        # 继续下一个视频的循环
+                        # 🎯 循环继续，直到成功上传达到目标或队列为空
                     
                     self.upload_status.emit(f"🏁 [{account}] 完成上传 {uploaded_count} 个视频")
                     
@@ -936,100 +1122,7 @@ class BatchUploadThread(QThread):
             except Exception as cleanup_error:
                 self.upload_status.emit(f"⚠️ 清理资源时出错: {cleanup_error}")
     
-    def perform_actual_upload(self, account_obj, browser, video_path, product_info):
-        """执行实际上传逻辑"""
-        try:
-            # 🎯 修复：使用共享的上传器实例，保持弹窗标志位
-            uploader = self.shared_uploader
-            
-            # 1. 真实上传视频文件（传递账号信息用于弹窗标志位）
-            account_name = account_obj.username if hasattr(account_obj, 'username') else 'unknown'
-            
-            # 🎯 优化：设置投稿成功回调，在投稿成功后立即更新数据库和界面
-            def success_callback():
-                """投稿成功后的回调：立即更新数据库和界面"""
-                try:
-                    # 提取商品ID
-                    filename = os.path.basename(video_path)
-                    from core.bilibili_product_manager import get_product_manager
-                    product_manager = get_product_manager()
-                    product_id = product_manager.extract_product_id_from_filename(filename)
-                    
-                    self.upload_status.emit(f"🎯 批量上传成功回调：视频={filename}, 账号={account_name}, 商品ID={product_id}")
-                    
-                    # 立即更新数据库
-                    db_success = self.mark_video_uploaded(video_path, account_name, product_id)
-                    self.upload_status.emit(f"📊 批量上传数据库更新结果: {db_success}")
-                    
-                    if db_success:
-                        # 立即发送界面更新信号
-                        self.account_progress_updated.emit(account_name)
-                        self.upload_status.emit(f"✅ 批量上传成功回调完成：已发送界面更新信号")
-                        return True
-                    else:
-                        self.upload_status.emit(f"❌ 批量上传数据库记录失败，检查mark_video_uploaded方法")
-                        return False
-                except Exception as e:
-                    import traceback
-                    error_trace = traceback.format_exc()
-                    self.upload_status.emit(f"❌ 批量上传成功回调异常: {e}")
-                    self.upload_status.emit(f"❌ 批量上传异常详情:\n{error_trace}")
-                    return False
-            
-            # 设置回调
-            uploader.success_callback = success_callback
-            
-            # 检查是否需要处理弹窗（与账号绑定）
-            need_popup_handling = account_name not in self.account_popup_handled
-            
-            if not uploader.upload_video(browser, video_path, account_name, need_popup_handling):
-                return False
-            
-            # 标记该账号已处理过弹窗
-            if need_popup_handling:
-                self.account_popup_handled[account_name] = True
-            
-            # 2. 填写视频信息
-            filename = os.path.basename(video_path)
-            
-            # 🎯 修复：正确提取标题，从文件名中去除商品ID部分
-            filename_without_ext = filename.rsplit('.', 1)[0]  # 去掉扩展名
-            if '----' in filename_without_ext:
-                # 文件名格式：商品ID----标题.mp4
-                extracted_title = filename_without_ext.split('----', 1)[1]
-                self.upload_status.emit(f"📝 提取标题: {extracted_title}")
-            else:
-                # 如果没有----分隔符，直接使用文件名（去掉扩展名）
-                extracted_title = filename_without_ext
-                self.upload_status.emit(f"📝 使用完整文件名作为标题: {extracted_title}")
-            
-            upload_settings = {
-                "title": extracted_title,  # 🎯 使用正确提取的标题
-                "tags": ["带货", "推荐"],
-                "description": f"优质商品推荐: {product_info.get('goodsName', '精选商品')}",
-                "title_template": "{filename}"  # 保持与uploader的兼容性
-            }
-            if not uploader.fill_video_info(browser, filename, upload_settings, product_info):
-                return False
-            
-            # 3. 添加商品
-            if not uploader.add_product_to_video(browser, filename, product_info):
-                return False
-            
-            # 4. 发布视频（成功时会自动调用回调更新数据库和界面）
-            publish_success = uploader.publish_video(browser, account_name)
-            
-            # 🎯 重要：清除回调避免影响下次使用
-            uploader.success_callback = None
-                
-            return publish_success
-            
-        except Exception as e:
-            self.upload_status.emit(f"上传异常: {str(e)}")
-            # 🎯 异常时也要清除回调
-            if hasattr(self, 'shared_uploader') and self.shared_uploader:
-                self.shared_uploader.success_callback = None
-            return False
+    # perform_actual_upload方法已被VideoUploadCoordinator.safe_upload_video替代
 
     def ensure_browser_ready(self, account_name, account_obj):
         """确保浏览器就绪 - 修复版：正确的初始化流程"""
@@ -1435,6 +1528,9 @@ class MainWindow(QMainWindow):
             self.log_message(f"⚠️ 浏览器状态监控启动失败: {e}", "WARNING")
         
         self.load_data()
+        
+        # 🎯 初始化日志过滤器
+        self._current_account_filter = "全部账号"  # 默认显示全部账号
 
         # 原有的性能优化补丁已清理，性能问题应通过重构解决
         
@@ -1676,8 +1772,18 @@ class MainWindow(QMainWindow):
         """创建日志标签页 - 使用模块化组件"""
         from gui.tabs.log_tab import LogTab
         
-        log_tab = LogTab(self)
-        return log_tab.create_widget()
+        self.log_tab_instance = LogTab(self)
+        widget = self.log_tab_instance.create_widget()
+        
+        # 🎯 创建完成后立即更新账号列表
+        if hasattr(self, 'core_app'):
+            try:
+                from PyQt5.QtCore import QTimer
+                QTimer.singleShot(100, self.log_tab_instance.update_account_list)
+            except:
+                pass
+        
+        return widget
     
     def setup_browser_status_timer(self):
         """🔧 优化版浏览器状态监控 - 禁用GUI重复检查，统一使用核心监控器"""
@@ -1861,24 +1967,24 @@ class MainWindow(QMainWindow):
         # 🎯 临时禁用文件监控，避免定时器问题
         # QTimer.singleShot(2000, self.setup_file_monitor)  # 暂时注释掉
     
-    def log_message(self, message: str, level: str = "INFO"):
-        """🎯 安全的日志消息添加 - 修复闪退问题"""
+    def log_message(self, message: str, level: str = "INFO", account: str = None):
+        """🎯 安全的日志消息添加 - 修复闪退问题，支持账号标识"""
         try:
             # 🎯 修复1：线程安全检查
             from PyQt5.QtCore import QThread, QTimer
             if QThread.currentThread() != self.thread():
                 # 如果不在主线程，使用QTimer延迟到主线程执行
-                QTimer.singleShot(0, lambda: self._safe_log_message(message, level))
+                QTimer.singleShot(0, lambda: self._safe_log_message(message, level, account))
                 return
             
-            self._safe_log_message(message, level)
+            self._safe_log_message(message, level, account)
             
         except Exception as e:
             # 🎯 静默处理日志异常，防止无限递归
             print(f"日志记录异常: {e}")
     
-    def _safe_log_message(self, message: str, level: str = "INFO"):
-        """🎯 安全的日志消息处理 - 主线程执行，优化日志过滤"""
+    def _safe_log_message(self, message: str, level: str = "INFO", account: str = None):
+        """🎯 安全的日志消息处理 - 主线程执行，优化日志过滤，支持账号标识"""
         try:
             if not hasattr(self, 'log_text') or not self.log_text:
                 return
@@ -1886,6 +1992,10 @@ class MainWindow(QMainWindow):
             # 🎯 新增：日志级别过滤，减少不必要的输出
             if not self._should_log(message, level):
                 return
+            
+            # 🎯 从消息中自动提取账号信息
+            if account is None:
+                account = self._extract_account_from_message(message)
             
             # 🎯 修复2：HTML转义，防止注入攻击和解析异常
             import html
@@ -1895,11 +2005,13 @@ class MainWindow(QMainWindow):
             if len(safe_message) > 500:  # 进一步减少到500字符
                 safe_message = safe_message[:497] + "..."
             
-            # 🎯 修复4：初始化日志计数
+            # 🎯 修复4：初始化日志计数和缓冲区
             if not hasattr(self, '_log_count'):
                 self._log_count = 0
             if not hasattr(self, '_log_buffer'):
                 self._log_buffer = []
+            if not hasattr(self, '_original_log_buffer'):
+                self._original_log_buffer = []  # 保存所有原始日志用于账号过滤
             
             # 🎯 修复5：使用缓冲区批量更新，减少DOM操作
             timestamp = time.strftime("%H:%M:%S")
@@ -1913,9 +2025,19 @@ class MainWindow(QMainWindow):
             }
             color = color_map.get(level, "#17a2b8")
             
-            # 🎯 修复6：简化HTML格式，减少解析开销
-            log_entry = f'[{timestamp}] {safe_message}'
-            self._log_buffer.append((log_entry, color))
+            # 🎯 修复6：简化HTML格式，减少解析开销，添加账号标识
+            if account:
+                log_entry = f'[{timestamp}] [{account}] {safe_message}'
+            else:
+                log_entry = f'[{timestamp}] {safe_message}'
+            
+            # 🎯 新增：保存到原始日志缓冲区（用于账号过滤）
+            self._original_log_buffer.append((log_entry, color, account))
+            
+            # 🎯 应用当前的账号过滤
+            current_filter = getattr(self, '_current_account_filter', '全部账号')
+            if current_filter == "全部账号" or account == current_filter or account is None:
+                self._log_buffer.append((log_entry, color))
             
             # 🎯 修复7：批量清理日志，防止内存溢出
             if self._log_count > 200:  # 进一步降低到200条
@@ -1923,6 +2045,8 @@ class MainWindow(QMainWindow):
                     self.log_text.clear()
                     self._log_count = 0
                     self._log_buffer.clear()
+                    # 同时清理原始缓冲区
+                    self._original_log_buffer = self._original_log_buffer[-50:]  # 只保留最近50条
                     self.log_text.append("--- 日志已清理 ---")
                 except:
                     pass
@@ -1937,6 +2061,21 @@ class MainWindow(QMainWindow):
                 print(f"安全日志记录异常: {e}")
             except:
                 pass
+    
+    def _extract_account_from_message(self, message: str) -> str:
+        """从日志消息中提取账号信息"""
+        try:
+            import re
+            # 匹配 [账号名] 格式
+            match = re.search(r'\[([^\]]+)\]', message)
+            if match:
+                potential_account = match.group(1)
+                # 验证是否是有效的账号名（手机号格式）
+                if re.match(r'^\d{11}$', potential_account):
+                    return potential_account
+            return None
+        except:
+            return None
     
     def _should_log(self, message: str, level: str) -> bool:
         """🎯 平衡版日志过滤器 - 保留重要信息，过滤技术细节"""
@@ -2645,6 +2784,14 @@ class MainWindow(QMainWindow):
             # 🎯 刷新全选框状态
             if hasattr(self, 'on_account_selection_changed'):
                 self.on_account_selection_changed()
+            
+            # 🎯 刷新完成后更新日志过滤器的账号列表
+            if hasattr(self, 'log_tab_instance'):
+                try:
+                    from PyQt5.QtCore import QTimer
+                    QTimer.singleShot(100, self.log_tab_instance.update_account_list)
+                except:
+                    pass
             
         except Exception as e:
             self.log_message(f"❌ 账号刷新执行失败: {str(e)}", "ERROR")
@@ -3722,8 +3869,10 @@ class MainWindow(QMainWindow):
         self.log_message(f"📊 批量上传进度: {progress}%")
     
     def on_batch_upload_status(self, status):
-        """批量上传状态"""
-        self.log_message(f"📝 {status}")
+        """批量上传状态，支持账号提取"""
+        # 🎯 从状态消息中提取账号信息
+        account = self._extract_account_from_message(status)
+        self.log_message(f"📝 {status}", "INFO", account)
     
     def on_batch_upload_finished(self, success, message):
         """批量上传完成"""
@@ -3819,6 +3968,46 @@ class MainWindow(QMainWindow):
             if hasattr(self, 'success_wait_time_spinbox'):
                 self.success_wait_time_spinbox.setValue(int(success_wait_time))
                 self.log_message(f"⏱️ 已加载投稿成功等待时间: {success_wait_time}秒", "INFO")
+            
+            # 🎯 新增：加载视频随机化策略设置到UI
+            if hasattr(self, 'randomize_strategy_combo'):
+                try:
+                    from gui.tabs.upload_tab import UploadTab
+                    # 为了访问UploadTab的方法，我们需要创建一个临时实例
+                    # 但是我们可以直接在这里实现加载逻辑
+                    current_strategy = ui_settings.get('randomize_strategy', 'random')
+                    
+                    # 映射策略值到UI显示文本
+                    strategy_mapping = {
+                        'random': 'random - 完全随机（推荐）',
+                        'group': 'group - 分组随机（每10个一组）',
+                        'partial': 'partial - 部分随机（70%改变）',
+                        'none': 'none - 不随机（按文件名顺序）'
+                    }
+                    
+                    display_text = strategy_mapping.get(current_strategy, 'random - 完全随机（推荐）')
+                    
+                    # 设置下拉框选中项（阻止信号触发，避免重复保存）
+                    self.randomize_strategy_combo.blockSignals(True)
+                    index = self.randomize_strategy_combo.findText(display_text)
+                    if index >= 0:
+                        self.randomize_strategy_combo.setCurrentIndex(index)
+                    self.randomize_strategy_combo.blockSignals(False)
+                    
+                    # 更新说明标签
+                    if hasattr(self, 'randomize_info_label'):
+                        strategy_info = {
+                            'random': '💡 完全随机可有效降低平台检测风险',
+                            'group': '💡 分组随机适合有序列要求的场景',
+                            'partial': '💡 部分随机平衡随机性和连续性',
+                            'none': '💡 不随机将按文件名顺序上传'
+                        }
+                        self.randomize_info_label.setText(strategy_info.get(current_strategy, '💡 策略已加载'))
+                    
+                    self.log_message(f"🎲 已加载视频随机化策略: {current_strategy}", "INFO")
+                    
+                except Exception as e:
+                    self.log_message(f"⚠️ 加载随机化策略设置失败: {e}", "WARNING")
             
             self.log_message("📋 界面设置已加载", "INFO")
             
@@ -4820,39 +5009,4 @@ class MainWindow(QMainWindow):
             except:
                 pass
 
-    def test_account_selection_state(self):
-        """🎯 测试账号选择状态的保存和读取功能"""
-        try:
-            self.log_message("🔧 开始测试账号选择状态...", "INFO")
-            
-            # 检查内存中的选择状态
-            if hasattr(self, '_account_selections'):
-                self.log_message(f"📋 内存中的选择状态: {len(self._account_selections)} 个账号", "INFO")
-                for account, selected in self._account_selections.items():
-                    status = "已选中" if selected else "未选中"
-                    self.log_message(f"   {account}: {status}", "INFO")
-            else:
-                self.log_message("❌ 内存中无选择状态数据", "WARNING")
-            
-            # 检查配置文件中的选择状态
-            try:
-                config = self.core_app.config_manager.load_config()
-                saved_selections = config.get('ui_settings', {}).get('account_selections', {})
-                if saved_selections:
-                    self.log_message(f"💾 配置文件中的选择状态: {len(saved_selections)} 个账号", "INFO")
-                    for account, selected in saved_selections.items():
-                        status = "已选中" if selected else "未选中"
-                        self.log_message(f"   {account}: {status}", "INFO")
-                else:
-                    self.log_message("📋 配置文件中无选择状态数据", "INFO")
-            except Exception as e:
-                self.log_message(f"❌ 读取配置文件失败: {e}", "ERROR")
-            
-            # 检查界面实际显示状态
-            selected_in_ui = self.get_selected_accounts()
-            self.log_message(f"🖥️ 界面实际选中: {len(selected_in_ui)} 个账号 - {selected_in_ui}", "INFO")
-            
-            self.log_message("✅ 账号选择状态测试完成", "SUCCESS")
-            
-        except Exception as e:
-            self.log_message(f"❌ 测试账号选择状态失败: {e}", "ERROR")
+
