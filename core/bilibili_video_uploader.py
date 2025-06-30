@@ -22,6 +22,7 @@ class BilibiliVideoUploader:
         self.config_manager = config_manager
         self.dialog_handled = False
         self.wait_manager = SmartWaitManager()
+        self.success_callback = None  # 🎯 新增：投稿成功回调
     
     def emit_status(self, message):
         """发送状态消息"""
@@ -1529,39 +1530,113 @@ class BilibiliVideoUploader:
                     return False
                 
                 try:
-                    # 1. 检查"再投一个"按钮
+                    # 1. 检查"再投一个"按钮 - 🎯 修复：支持B站实际的HTML结构
                     if not success_detected:
                         try:
-                            button_elements = driver.find_elements(By.XPATH, "//button[contains(text(), '再投一个')]")
+                            # 🎯 方法1：使用用户提供的精确CSS选择器
+                            button_elements = driver.find_elements(By.CSS_SELECTOR, "div.op-buttons > button > span")
                             for button_element in button_elements:
-                                if button_element and button_element.is_displayed():
+                                if button_element and button_element.is_displayed() and "再投一个" in button_element.text:
                                     success_detected = True
-                                    self.emit_status("🎉 检测到投稿成功：再投一个按钮")
+                                    self.emit_status("🎉 检测到投稿成功：再投一个按钮 (CSS选择器)")
                                     break
                         except:
                             pass
+                        
+                        # 🎯 方法2：通用XPath - 查找包含"再投一个"文本的span，然后检查父button
+                        if not success_detected:
+                            try:
+                                span_elements = driver.find_elements(By.XPATH, "//span[contains(text(), '再投一个')]")
+                                for span_element in span_elements:
+                                    if span_element and span_element.is_displayed():
+                                        # 检查span的父元素是否是button
+                                        parent_button = span_element.find_element(By.XPATH, "./..")
+                                        if parent_button.tag_name.lower() == 'button':
+                                            success_detected = True
+                                            self.emit_status("🎉 检测到投稿成功：再投一个按钮 (XPath选择器)")
+                                            break
+                            except:
+                                pass
+                        
+                        # 🎯 方法3：后备方案 - 使用更广泛的XPath
+                        if not success_detected:
+                            try:
+                                button_elements = driver.find_elements(By.XPATH, "//button[.//span[contains(text(), '再投一个')]]")
+                                for button_element in button_elements:
+                                    if button_element and button_element.is_displayed():
+                                        success_detected = True
+                                        self.emit_status("🎉 检测到投稿成功：再投一个按钮 (后备选择器)")
+                                        break
+                            except:
+                                pass
                     
-                    # 2. 检查"查看稿件"按钮
+                    # 2. 检查"查看稿件"按钮 - 🎯 修复：支持B站实际的HTML结构
                     if not success_detected:
                         try:
-                            button_elements = driver.find_elements(By.XPATH, "//button[contains(text(), '查看稿件')]")
-                            for button_element in button_elements:
-                                if button_element and button_element.is_displayed():
-                                    success_detected = True
-                                    self.emit_status("🎉 检测到投稿成功：查看稿件按钮")
-                                    break
+                            # 🎯 方法1：查找包含"查看稿件"文本的span，然后检查父button
+                            span_elements = driver.find_elements(By.XPATH, "//span[contains(text(), '查看稿件')]")
+                            for span_element in span_elements:
+                                if span_element and span_element.is_displayed():
+                                    # 检查span的父元素是否是button
+                                    try:
+                                        parent_button = span_element.find_element(By.XPATH, "./..")
+                                        if parent_button.tag_name.lower() == 'button':
+                                            success_detected = True
+                                            self.emit_status("🎉 检测到投稿成功：查看稿件按钮")
+                                            break
+                                    except:
+                                        continue
                         except:
                             pass
+                        
+                        # 🎯 方法2：后备方案 - 使用XPath查找button中包含span的情况
+                        if not success_detected:
+                            try:
+                                button_elements = driver.find_elements(By.XPATH, "//button[.//span[contains(text(), '查看稿件')]]")
+                                for button_element in button_elements:
+                                    if button_element and button_element.is_displayed():
+                                        success_detected = True
+                                        self.emit_status("🎉 检测到投稿成功：查看稿件按钮 (后备)")
+                                        break
+                            except:
+                                pass
                     
-                    # 3. 检查"稿件投递成功"文本
+                    # 3. 检查投稿成功相关文本 - 🎯 增强：支持多种成功提示文本
+                    if not success_detected:
+                        success_texts = [
+                            "稿件投递成功",
+                            "投稿成功", 
+                            "发布成功",
+                            "上传成功",
+                            "提交成功"
+                        ]
+                        
+                        for success_text in success_texts:
+                            if success_detected:
+                                break
+                            try:
+                                success_elements = driver.find_elements(By.XPATH, f"//*[contains(text(), '{success_text}')]")
+                                for success_element in success_elements:
+                                    if success_element and success_element.is_displayed():
+                                        success_detected = True
+                                        self.emit_status(f"🎉 检测到投稿成功：{success_text}文本")
+                                        break
+                            except:
+                                continue
+                    
+                    # 🎯 4. 新增：检查投稿成功页面的操作按钮容器
                     if not success_detected:
                         try:
-                            success_elements = driver.find_elements(By.XPATH, "//*[contains(text(), '稿件投递成功')]")
-                            for success_element in success_elements:
-                                if success_element and success_element.is_displayed():
-                                    success_detected = True
-                                    self.emit_status("🎉 检测到投稿成功：稿件投递成功文本")
-                                    break
+                            # 检查是否存在包含操作按钮的容器（基于用户提供的结构）
+                            op_buttons_container = driver.find_elements(By.CSS_SELECTOR, "div.op-buttons")
+                            for container in op_buttons_container:
+                                if container and container.is_displayed():
+                                    # 检查容器内是否有按钮
+                                    buttons = container.find_elements(By.TAG_NAME, "button")
+                                    if buttons and any(btn.is_displayed() for btn in buttons):
+                                        success_detected = True
+                                        self.emit_status("🎉 检测到投稿成功：操作按钮容器存在")
+                                        break
                         except:
                             pass
                     
@@ -1586,26 +1661,79 @@ class BilibiliVideoUploader:
             if success_detected:
                 self.emit_status("🎉 视频投稿成功！")
                 
+                # 🎯 关键修复：投稿成功后清除超时检查，避免与成功等待时间冲突
+                self.start_time = None  # 清除超时计时，避免在成功等待期间被误判为超时
+                
+                # 🎯 优化：投稿成功后立即更新数据库和界面，再进行等待
+                callback_executed = False
+                if self.success_callback:
+                    try:
+                        self.emit_status("📊 投稿成功，立即更新数据库和界面...")
+                        # 调用成功回调：立即更新数据库和界面
+                        callback_success = self.success_callback()
+                        callback_executed = True
+                        if callback_success:
+                            self.emit_status("✅ 数据库和界面更新成功")
+                        else:
+                            self.emit_status("⚠️ 数据库或界面更新失败，但投稿已成功")
+                            self.emit_status("🔍 请检查上方的详细错误日志，可能是数据库连接、权限或数据格式问题")
+                    except Exception as e:
+                        import traceback
+                        error_trace = traceback.format_exc()
+                        self.emit_status(f"⚠️ 调用成功回调失败: {e}")
+                        self.emit_status(f"⚠️ 详细错误信息:\n{error_trace}")
+                        callback_executed = True  # 标记为已执行，即使失败
+                else:
+                    self.emit_status("⚠️ 没有设置success_callback，无法更新数据库")
+                
+                # 🎯 关键修复：无论回调是否成功，都要执行等待逻辑
+                self.emit_status("🔍 开始获取投稿成功等待时间配置...")
+                
                 # 🎯 添加投稿成功后的等待时间
+                observation_time = 2  # 默认值
+                config_loaded = False
+                
                 if self.config_manager:
                     try:
+                        self.emit_status("📋 正在加载配置文件...")
                         config = self.config_manager.load_config()
                         if config and 'ui_settings' in config:
                             ui_settings = config['ui_settings']
                             observation_time = ui_settings.get('success_wait_time', 2)
+                            config_loaded = True
                             self.emit_status(f"📝 使用配置的投稿成功等待时间: {observation_time}秒")
                         else:
+                            self.emit_status("⚠️ 配置文件中没有ui_settings，使用默认等待时间: 2秒")
                             observation_time = 2
                     except Exception as e:
                         observation_time = 2  # 出错时使用默认值
                         self.emit_status(f"⚠️ 获取配置失败: {e}，使用默认等待时间: 2秒")
                 else:
+                    self.emit_status("⚠️ 没有配置管理器，使用默认等待时间: 2秒")
                     observation_time = 2  # 没有配置管理器时使用默认值
                 
-                # 等待指定时间
-                for i in range(observation_time):
-                    self.wait_manager.smart_sleep(1)
-                    self.emit_status(f"⏳ 投稿成功后等待中... ({i+1}/{observation_time}秒)")
+                # 🎯 确保等待时间至少为1秒，最多不超过999秒
+                observation_time = max(1, min(999, int(observation_time)))
+                
+                # 🎯 修复：投稿成功后的等待不受3分钟超时限制
+                self.emit_status(f"⏳ 开始投稿成功后等待，不受3分钟超时限制 ({observation_time}秒)")
+                self.emit_status(f"📊 回调执行状态: {'✅ 已执行' if callback_executed else '❌ 未执行'}")
+                self.emit_status(f"📊 配置加载状态: {'✅ 成功' if config_loaded else '❌ 失败'}")
+                
+                # 🎯 关键修复：确保等待逻辑一定会执行
+                try:
+                    self.emit_status("🚀 开始执行等待循环...")
+                    # 等待指定时间
+                    for i in range(observation_time):
+                        self.wait_manager.smart_sleep(1)
+                        # 每10秒输出一次详细状态，避免日志过多
+                        if (i + 1) % 10 == 0 or i == 0 or (i + 1) == observation_time:
+                            self.emit_status(f"⏳ 投稿成功后等待中... ({i+1}/{observation_time}秒)")
+                    
+                    self.emit_status("✅ 投稿成功等待完成，继续处理流程")
+                except Exception as wait_error:
+                    self.emit_status(f"❌ 等待过程中发生异常: {wait_error}")
+                    # 即使等待出错，也要继续
                 
                 return True
             else:

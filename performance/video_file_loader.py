@@ -14,7 +14,8 @@ from pathlib import Path
 from dataclasses import dataclass
 from typing import List, Dict, Tuple, Optional, Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from PyQt5.QtCore import QObject, pyqtSignal, QTimer
+from PyQt5.QtCore import QObject, pyqtSignal, QTimer, Qt
+from PyQt5.QtWidgets import QListWidgetItem
 from core.logger import get_logger
 
 logger = get_logger()
@@ -165,34 +166,29 @@ class AsyncVideoFileLoader(QObject):
             self._scan_directory_worker, directory
         )
         
-        # 监控扫描完成
-        def on_scan_done():
+        # 使用更简单直接的方式处理异步结果
+        def handle_result():
             try:
-                if self._current_scan_future and not self._current_scan_future.cancelled():
-                    result = self._current_scan_future.result()
-                    self.cache.cache_result(directory, result)
-                    self.scan_completed.emit(result)
+                if self._current_scan_future and self._current_scan_future.done():
+                    if not self._current_scan_future.cancelled():
+                        result = self._current_scan_future.result()
+                        self.cache.cache_result(directory, result)
+                        logger.info(f"扫描完成，发送结果信号: {result.total_files}个文件")
+                        self.scan_completed.emit(result)
+                    self._is_scanning = False
+                    self._current_scan_future = None
+                else:
+                    # 继续检查
+                    QTimer.singleShot(100, handle_result)
             except Exception as e:
                 error_msg = f"扫描失败: {e}"
                 logger.error(error_msg)
                 self.scan_failed.emit(error_msg)
-            finally:
                 self._is_scanning = False
                 self._current_scan_future = None
         
-        # 使用QTimer来在主线程中处理结果
-        check_timer = QTimer()
-        check_timer.setSingleShot(True)
-        
-        def check_completion():
-            if self._current_scan_future and self._current_scan_future.done():
-                on_scan_done()
-            else:
-                # 继续检查
-                check_timer.start(100)
-        
-        check_timer.timeout.connect(check_completion)
-        check_timer.start(100)
+        # 开始检查结果
+        QTimer.singleShot(100, handle_result)
     
     def _scan_directory_worker(self, directory: str) -> ScanResult:
         """扫描目录的工作线程"""
@@ -338,8 +334,12 @@ class OptimizedVideoListManager:
             
     def _on_scan_completed(self, result: ScanResult):
         """扫描完成"""
+        logger.info(f"收到扫描完成信号: {result.total_files}个文件")
+        
         self.all_files = result.files
         self.total_pages = (result.total_files + self.files_per_page - 1) // self.files_per_page
+        
+        logger.info(f"开始更新视频列表显示，总页数: {self.total_pages}")
         
         # 更新列表显示
         self._update_list_display()
@@ -348,16 +348,17 @@ class OptimizedVideoListManager:
         if self.stats_label:
             cache_text = " (缓存)" if result.from_cache else ""
             if self.total_pages > 1:
-                self.stats_label.setText(
+                stats_text = (
                     f"📊 第{self.current_page + 1}/{self.total_pages}页 | "
                     f"总计: {result.total_files}个文件 ({result.total_size_mb:.1f}MB){cache_text}"
                 )
             else:
-                self.stats_label.setText(
-                    f"📊 文件统计: {result.total_files}个文件, {result.total_size_mb:.1f}MB{cache_text}"
-                )
+                stats_text = f"📊 文件统计: {result.total_files}个文件, {result.total_size_mb:.1f}MB{cache_text}"
+            
+            self.stats_label.setText(stats_text)
+            logger.info(f"统计信息已更新: {stats_text}")
         
-        logger.info(f"视频列表更新完成: {result.total_files}个文件")
+        logger.info(f"视频列表UI更新完成: {result.total_files}个文件")
         
     def _on_scan_failed(self, error_message: str):
         """扫描失败"""
@@ -372,19 +373,21 @@ class OptimizedVideoListManager:
         end_idx = min(start_idx + self.files_per_page, len(self.all_files))
         current_page_files = self.all_files[start_idx:end_idx]
         
+        logger.info(f"更新视频列表显示: 第{self.current_page+1}页, {len(current_page_files)}个文件")
+        
         # 更新UI
         self.video_list.blockSignals(True)
         self.video_list.clear()
         
-        for file_info in current_page_files:
-            from PyQt5.QtWidgets import QListWidgetItem
-            from PyQt5.QtCore import Qt
-            
+        for i, file_info in enumerate(current_page_files):
             item = QListWidgetItem(file_info.display_text)
             item.setData(Qt.UserRole, file_info.filepath)
             self.video_list.addItem(item)
+            if i < 3:  # 只打印前3个文件作为调试
+                logger.info(f"  添加文件: {file_info.display_text}")
         
         self.video_list.blockSignals(False)
+        logger.info(f"视频列表UI更新完成，共添加{len(current_page_files)}个条目")
         
     def next_page(self):
         """下一页"""

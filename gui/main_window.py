@@ -83,6 +83,46 @@ class BrowserUploadThread(QThread):
     def stop(self):
         self.is_stopped = True
         
+    def mark_video_uploaded(self, file_path, account, product_id):
+        """标记视频已上传 - 数据库版本"""
+        import hashlib
+        import os
+        from datetime import datetime
+        
+        # 计算文件MD5
+        hash_md5 = hashlib.md5()
+        try:
+            with open(file_path, "rb") as f:
+                for chunk in iter(lambda: f.read(4096), b""):
+                    hash_md5.update(chunk)
+            md5_hash = hash_md5.hexdigest()
+        except Exception as e:
+            self.upload_status.emit(f"❌ 无法计算文件MD5: {os.path.basename(file_path)} - {e}")
+            return False
+        
+        try:
+            # 使用数据库记录
+            from database.database_manager import db_manager
+            success = db_manager.add_uploaded_video(
+                md5_hash=md5_hash,
+                filename=os.path.basename(file_path),
+                account_username=account,
+                upload_date=datetime.now().strftime("%Y-%m-%d"),
+                product_id=product_id,
+                file_size=os.path.getsize(file_path) if os.path.exists(file_path) else 0
+            )
+            
+            if success:
+                self.upload_status.emit(f"📊 数据库记录上传: {os.path.basename(file_path)}")
+                return True
+            else:
+                self.upload_status.emit(f"❌ 数据库记录失败: {os.path.basename(file_path)}")
+                return False
+                
+        except Exception as e:
+            self.upload_status.emit(f"❌ 数据库记录失败: {os.path.basename(file_path)} - {e}")
+            return False
+        
     def run(self):
         try:
             # 步骤1: 验证账号和浏览器
@@ -212,18 +252,48 @@ class BrowserUploadThread(QThread):
                 
             self.upload_progress.emit(95)
             
-            # 步骤8: 使用独立上传器发布视频
+            # 🎯 优化：设置投稿成功回调，在投稿成功后立即更新数据库和界面
+            def success_callback():
+                """投稿成功后的回调：立即更新数据库和界面"""
+                try:
+                    self.upload_status.emit(f"🎯 开始成功回调：视频={os.path.basename(video_path)}, 账号={self.account_name}, 商品ID={product_id}")
+                    
+                    # 立即更新数据库
+                    db_success = self.mark_video_uploaded(video_path, self.account_name, product_id)
+                    self.upload_status.emit(f"📊 数据库更新结果: {db_success}")
+                    
+                    if db_success:
+                        # 立即发送界面更新信号
+                        self.account_progress_updated.emit(self.account_name)
+                        self.upload_status.emit(f"✅ 成功回调完成：已发送界面更新信号")
+                        return True
+                    else:
+                        self.upload_status.emit(f"❌ 数据库记录失败，检查mark_video_uploaded方法")
+                        return False
+                except Exception as e:
+                    import traceback
+                    error_trace = traceback.format_exc()
+                    self.upload_status.emit(f"❌ 成功回调异常: {e}")
+                    self.upload_status.emit(f"❌ 异常详情:\n{error_trace}")
+                    return False
+            
+            # 设置回调
+            uploader.success_callback = success_callback
+            
+            # 步骤8: 使用独立上传器发布视频（成功时会自动调用回调更新数据库和界面）
             self.upload_status.emit("发布视频...")
             success = uploader.publish_video(driver, self.account_name)
+            
+            # 🎯 重要：清除回调避免影响其他使用
+            uploader.success_callback = None
+            
             if not success:
                 self.upload_finished.emit(False, "发布视频失败")
                 return
                 
+            # 🎯 优化：发布成功，数据库更新和界面刷新已在回调中完成
             self.upload_progress.emit(100)
             self.upload_finished.emit(True, f"视频上传成功! 商品: {product_info.get('goodsName', '未知商品')}")
-            
-            # 🎯 修复：发布成功后发出账号进度更新信号（在上传结果发送之后）
-            self.account_progress_updated.emit(self.account_name)
             
         except Exception as e:
             self.upload_finished.emit(False, f"上传过程异常: {str(e)}")
@@ -248,17 +318,72 @@ class BatchUploadThread(QThread):
         self.video_files = video_files
         self.video_dir = video_dir
         self.concurrent_browsers = concurrent_browsers
-        self.videos_per_account = videos_per_account
+        # 🎯 修复：不保存固定值，而是保存获取最新值的方法
+        self._initial_videos_per_account = videos_per_account  # 保留初始值作为后备
+        self.main_window = None  # 稍后设置
         self.is_stopped = False
+        
+        # 🎯 初始化共享上传器
+        try:
+            from core.bilibili_video_uploader import BilibiliVideoUploader
+            self.shared_uploader = BilibiliVideoUploader(self.upload_status.emit, self.core_app.config_manager)
+        except ImportError:
+            # 后备方案：使用工厂函数
+            try:
+                from core.bilibili_video_uploader import create_uploader
+                self.shared_uploader = create_uploader(self.upload_status.emit, self.core_app.config_manager)
+            except ImportError:
+                self.shared_uploader = None
+        
+        # 🎯 创建账号弹窗处理记录（每个账号只处理一次）
+        self.account_popup_handled = {}
+        
+        # 🎯 账号服务注入点
+        self.account_service = None
+        
+        # 加载已上传视频记录
         self.uploaded_videos_md5 = self.load_uploaded_videos()
-        
-        # 🎯 修复：创建共享的上传器实例（但弹窗标志位与账号绑定）
-        from core.bilibili_video_uploader import create_uploader
-        self.shared_uploader = create_uploader(self.upload_status.emit, self.core_app.config_manager)
-        
-        # 🎯 弹窗处理标志位与账号绑定（浏览器重启时重置）
-        self.account_popup_handled = {}  # {账号名: 是否已处理弹窗}
-        
+
+    def load_uploaded_videos(self):
+        """从文件加载已上传的视频MD5列表 - 兼容性保留"""
+        try:
+            # 这里主要为了兼容性，实际使用数据库
+            return set()
+        except Exception:
+            return set()
+    
+    def save_uploaded_videos(self):
+        """保存已上传视频记录 - 兼容性保留"""
+        try:
+            # 这里主要为了兼容性，实际使用数据库
+            pass
+        except Exception:
+            pass
+
+    def get_current_videos_per_account(self):
+        """🎯 实时获取当前的每账号视频数量设置"""
+        try:
+            # 从主窗口获取最新的设置值
+            if (self.main_window and 
+                hasattr(self.main_window, 'videos_per_account_input') and 
+                self.main_window.videos_per_account_input):
+                current_value = int(self.main_window.videos_per_account_input.text())
+                self.upload_status.emit(f"🎯 实时获取目标数量: {current_value}")
+                return current_value
+            else:
+                # 后备方案：使用初始值
+                self.upload_status.emit(f"⚠️ 无法获取实时设置，使用初始值: {self._initial_videos_per_account}")
+                return self._initial_videos_per_account
+        except (ValueError, AttributeError) as e:
+            # 如果获取失败，使用初始值
+            self.upload_status.emit(f"⚠️ 获取实时设置失败: {e}，使用初始值: {self._initial_videos_per_account}")
+            return self._initial_videos_per_account
+
+    @property
+    def videos_per_account(self):
+        """🎯 动态属性：每次访问都获取最新值"""
+        return self.get_current_videos_per_account()
+    
     def load_uploaded_videos(self):
         """加载已上传视频MD5记录 - SQLite增强版"""
         try:
@@ -314,32 +439,37 @@ class BatchUploadThread(QThread):
     def mark_video_uploaded(self, file_path, account, product_id):
         """标记视频已上传 - SQLite增强版"""
         md5_hash = self.get_file_md5(file_path)
-        if md5_hash:
-            from datetime import datetime
+        if not md5_hash:
+            self.upload_status.emit(f"❌ 无法计算文件MD5: {os.path.basename(file_path)}")
+            return False
+        
+        from datetime import datetime
+        
+        try:
+            # 🚀 优先使用数据库记录
+            from database.database_manager import db_manager
+            success = db_manager.add_uploaded_video(
+                md5_hash=md5_hash,
+                filename=os.path.basename(file_path),
+                account_username=account,
+                upload_date=datetime.now().strftime("%Y-%m-%d"),
+                product_id=product_id,
+                file_size=os.path.getsize(file_path) if os.path.exists(file_path) else 0
+            )
             
-            try:
-                # 🚀 优先使用数据库记录
-                from database.database_manager import db_manager
-                success = db_manager.add_uploaded_video(
-                    md5_hash=md5_hash,
-                    filename=os.path.basename(file_path),
-                    account_username=account,
-                    upload_date=datetime.now().strftime("%Y-%m-%d"),
-                    product_id=product_id,
-                    file_size=os.path.getsize(file_path) if os.path.exists(file_path) else 0
-                )
+            if success:
+                self.upload_status.emit(f"📊 数据库记录上传: {os.path.basename(file_path)}")
+                # 🎯 关键修复：只有数据库记录成功才清除进度缓存
+                self._clear_progress_cache()
+                return True
+            else:
+                self.upload_status.emit(f"❌ 数据库记录失败: {os.path.basename(file_path)}")
+                return False
                 
-                if success:
-                    self.upload_status.emit(f"📊 数据库记录上传: {os.path.basename(file_path)}")
-                else:
-                    self.upload_status.emit(f"❌ 数据库记录失败: {os.path.basename(file_path)}")
-                    
-            except Exception as e:
-                # ❌ 数据库失败，不再回退到JSON
-                self.upload_status.emit(f"❌ 数据库记录失败: {os.path.basename(file_path)} - {e}")
-            
-            # 🎯 关键修复：保存后立即清除进度缓存
-            self._clear_progress_cache()
+        except Exception as e:
+            # ❌ 数据库失败，记录详细错误
+            self.upload_status.emit(f"❌ 数据库记录失败: {os.path.basename(file_path)} - {e}")
+            return False
 
     def _clear_progress_cache(self):
         """清除进度缓存 - 确保数据一致性"""
@@ -430,11 +560,6 @@ class BatchUploadThread(QThread):
             
             self.upload_status.emit(f"📹 找到 {len(available_videos)} 个待上传视频")
             
-            # 创建视频队列
-            video_queue = Queue()
-            for video in available_videos:
-                video_queue.put(video)
-            
             # 统计变量
             total_videos = len(available_videos)
             processed_videos = 0
@@ -446,11 +571,18 @@ class BatchUploadThread(QThread):
             valid_accounts = []
             completed_accounts = []
             
+            # 🎯 关键修复：清理所有缓存，确保使用最新数据库数据
+            self._clear_progress_cache()
+            if hasattr(self, 'account_service') and self.account_service:
+                self.account_service.clear_progress_cache()
+            self.upload_status.emit("🧹 已清理进度缓存，确保使用最新数据")
+            
             self.upload_status.emit("🔍 检查账号完成状态...")
             for account in self.selected_accounts:
                 try:
-                    # 🎯 简化：直接使用account_service
-                    status, completed, published = self.account_service.get_account_progress(account, self.videos_per_account)
+                    # 🎯 关键修复：直接使用数据库查询，绕过缓存
+                    from database.database_manager import db_manager
+                    status, completed, published = db_manager.get_account_progress(account, self.videos_per_account)
                         
                     if completed:
                         completed_accounts.append(account)
@@ -469,6 +601,18 @@ class BatchUploadThread(QThread):
             
             self.upload_status.emit(f"✅ 有效账号: {len(valid_accounts)} 个，已完成: {len(completed_accounts)} 个")
             
+            # 🎯 修复：创建一次性视频队列，每个视频只能被上传一次
+            video_queue = Queue()
+            for video in available_videos:
+                video_queue.put(video)
+            
+            self.upload_status.emit(f"📹 视频队列已创建: {len(available_videos)} 个视频")
+            self.upload_status.emit(f"💡 一次性上传模式：每个视频只能被上传一次，成功后立即删除文件")
+            self.upload_status.emit(f"📊 预计总需求: {len(valid_accounts) * self.videos_per_account} 个视频，可用视频: {len(available_videos)} 个")
+            
+            if len(available_videos) < len(valid_accounts) * self.videos_per_account:
+                self.upload_status.emit(f"⚠️ 视频数量不足，部分账号可能无法达到目标数量")
+            
             # 账号队列和浏览器池管理（只处理有效账号）
             account_queue = Queue()
             for account in valid_accounts:
@@ -484,9 +628,11 @@ class BatchUploadThread(QThread):
                 
                 browser = None
                 try:
-                    # 🎯 新增：处理前再次检查账号完成状态
+                    # 🎯 修复：处理前再次检查账号完成状态（绕过缓存）
                     try:
-                        status, completed, published = self.account_service.get_account_progress(account, self.videos_per_account)
+                        # 🎯 关键修复：直接使用数据库查询，绕过缓存
+                        from database.database_manager import db_manager
+                        status, completed, published = db_manager.get_account_progress(account, self.videos_per_account)
                             
                         if completed:
                             self.upload_status.emit(f"⏭️ [{account}] 处理前检查发现已完成目标 ({status})，跳过")
@@ -521,13 +667,18 @@ class BatchUploadThread(QThread):
                     
                     # 🎯 修复：允许每个账号上传多个视频（用户需求：30个视频循环上传）
                     videos_processed_by_account = 0
-                    while videos_processed_by_account < self.videos_per_account and not video_queue.empty():
+                    consecutive_empty_queue_count = 0  # 🎯 新增：连续空队列计数
+                    max_empty_queue_retries = 10  # 🎯 最多重试10次（避免无限等待）
+                    
+                    while videos_processed_by_account < self.videos_per_account:
                         if self.is_stopped:
                             break
                         
-                        # 🎯 新增：每个视频处理前检查账号是否已达目标
+                        # 🎯 修复：每个视频处理前检查账号是否已达目标（绕过缓存）
                         try:
-                            status, completed, published = self.account_service.get_account_progress(account, self.videos_per_account)
+                            # 🎯 关键修复：直接使用数据库查询，绕过缓存
+                            from database.database_manager import db_manager
+                            status, completed, published = db_manager.get_account_progress(account, self.videos_per_account)
                                 
                             if completed:
                                 self.upload_status.emit(f"⏭️ [{account}] 视频处理前检查发现已完成目标 ({status})，停止处理")
@@ -535,11 +686,26 @@ class BatchUploadThread(QThread):
                         except Exception as e:
                             self.upload_status.emit(f"⚠️ [{account}] 视频前状态检查失败: {e}")
                         
-                        
+                        # 🎯 修复：改进视频队列获取逻辑，支持等待
+                        video_path = None
                         try:
                             video_path = video_queue.get_nowait()
+                            consecutive_empty_queue_count = 0  # 重置计数器
                         except:
-                            break  # 队列为空
+                            # 队列为空，但不立即退出
+                            consecutive_empty_queue_count += 1
+                            
+                            # 🎯 队列为空时的处理策略
+                            if consecutive_empty_queue_count <= max_empty_queue_retries:
+                                self.upload_status.emit(f"⏳ [{account}] 视频队列暂时为空，等待其他账号释放视频 (尝试 {consecutive_empty_queue_count}/{max_empty_queue_retries})")
+                                time.sleep(2)  # 等待2秒后重试
+                                continue
+                            else:
+                                self.upload_status.emit(f"🏁 [{account}] 视频队列持续为空，所有视频已被其他账号处理完毕")
+                                break
+                        
+                        if not video_path:
+                            continue
                         
                         filename = os.path.basename(video_path)
                         processed_videos += 1
@@ -577,19 +743,23 @@ class BatchUploadThread(QThread):
                         upload_success = self.perform_actual_upload(account_obj, browser, video_path, product_info)
                         
                         if upload_success:
+                            # 🎯 优化：数据库更新和界面刷新已在uploader的回调中完成
+                            # 这里只需要处理成功后的流程
                             successful_uploads += 1
                             uploaded_count += 1
-                            self.mark_video_uploaded(video_path, account, product_id)
-                            # 🎯 修复：在JSON文件更新后立即发送界面刷新信号
-                            self.account_progress_updated.emit(account)
-                            # 删除视频文件并更新计数器
+                            
+                            # 🎯 修复：投稿成功后立即删除视频文件，避免重复上传
                             if self.delete_video_file(video_path):
                                 deleted_videos += 1
-                            self.upload_status.emit(f"✅ [{account}] 第{videos_processed_by_account}个视频成功: {filename}")
+                                self.upload_status.emit(f"✅ [{account}] 第{videos_processed_by_account}个视频成功: {filename} (文件已删除)")
+                            else:
+                                self.upload_status.emit(f"✅ [{account}] 第{videos_processed_by_account}个视频成功: {filename} (文件删除失败)")
                             
-                            # 🎯 新增：检查账号是否已完成当日目标
+                            # 🎯 修复：检查账号是否已完成当日目标（绕过缓存）
                             try:
-                                status, completed, published = self.account_service.get_account_progress(account, self.videos_per_account)
+                                # 🎯 关键修复：直接使用数据库查询，绕过缓存
+                                from database.database_manager import db_manager
+                                status, completed, published = db_manager.get_account_progress(account, self.videos_per_account)
                                     
                                 if completed:
                                     self.upload_status.emit(f"🎉 [{account}] 已完成当日目标 ({published}/{self.videos_per_account})，停止继续上传")
@@ -775,6 +945,40 @@ class BatchUploadThread(QThread):
             # 1. 真实上传视频文件（传递账号信息用于弹窗标志位）
             account_name = account_obj.username if hasattr(account_obj, 'username') else 'unknown'
             
+            # 🎯 优化：设置投稿成功回调，在投稿成功后立即更新数据库和界面
+            def success_callback():
+                """投稿成功后的回调：立即更新数据库和界面"""
+                try:
+                    # 提取商品ID
+                    filename = os.path.basename(video_path)
+                    from core.bilibili_product_manager import get_product_manager
+                    product_manager = get_product_manager()
+                    product_id = product_manager.extract_product_id_from_filename(filename)
+                    
+                    self.upload_status.emit(f"🎯 批量上传成功回调：视频={filename}, 账号={account_name}, 商品ID={product_id}")
+                    
+                    # 立即更新数据库
+                    db_success = self.mark_video_uploaded(video_path, account_name, product_id)
+                    self.upload_status.emit(f"📊 批量上传数据库更新结果: {db_success}")
+                    
+                    if db_success:
+                        # 立即发送界面更新信号
+                        self.account_progress_updated.emit(account_name)
+                        self.upload_status.emit(f"✅ 批量上传成功回调完成：已发送界面更新信号")
+                        return True
+                    else:
+                        self.upload_status.emit(f"❌ 批量上传数据库记录失败，检查mark_video_uploaded方法")
+                        return False
+                except Exception as e:
+                    import traceback
+                    error_trace = traceback.format_exc()
+                    self.upload_status.emit(f"❌ 批量上传成功回调异常: {e}")
+                    self.upload_status.emit(f"❌ 批量上传异常详情:\n{error_trace}")
+                    return False
+            
+            # 设置回调
+            uploader.success_callback = success_callback
+            
             # 检查是否需要处理弹窗（与账号绑定）
             need_popup_handling = account_name not in self.account_popup_handled
             
@@ -812,17 +1016,19 @@ class BatchUploadThread(QThread):
             if not uploader.add_product_to_video(browser, filename, product_info):
                 return False
             
-            # 4. 发布视频
-            if not uploader.publish_video(browser, account_name):
-                return False
+            # 4. 发布视频（成功时会自动调用回调更新数据库和界面）
+            publish_success = uploader.publish_video(browser, account_name)
             
-            # 🎯 移除：改为在主循环的mark_video_uploaded之后发送信号，确保时序正确
-            # self.account_progress_updated.emit(account_name)
+            # 🎯 重要：清除回调避免影响下次使用
+            uploader.success_callback = None
                 
-            return True
+            return publish_success
             
         except Exception as e:
             self.upload_status.emit(f"上传异常: {str(e)}")
+            # 🎯 异常时也要清除回调
+            if hasattr(self, 'shared_uploader') and self.shared_uploader:
+                self.shared_uploader.success_callback = None
             return False
 
     def ensure_browser_ready(self, account_name, account_obj):
@@ -1733,41 +1939,35 @@ class MainWindow(QMainWindow):
                 pass
     
     def _should_log(self, message: str, level: str) -> bool:
-        """🎯 优化版日志过滤器 - 大幅减少日志输出"""
+        """🎯 平衡版日志过滤器 - 保留重要信息，过滤技术细节"""
         # 🎯 检查是否开启详细日志模式
         verbose_mode = getattr(self, '_verbose_logging', False)
         if verbose_mode:
             return True  # 详细模式下显示所有日志
         
-        # 🚫 大幅扩展过滤规则，减少冗余日志
-        verbose_filters = [
-            # 投稿过程的详细步骤
-            "📝", "导航到", "⏳", "等待", "点击", "填写", "选择", "查找", "🔍",
-            "✅ 找到", "✅ 已", "✅ 使用", "智能等待", "尝试方法", "等待视频",
-            "视频上传中", "视频上传完成", "非首次上传", "提取标题", "方法1成功",
-            "标题填写成功", "话题选择成功", "视频信息填写完成", "商品添加流程",
-            "已选中", "已选择", "已点击", "已输入", "弹窗已加载", "链接选品",
-            "识别链接", "确定按钮已就绪", "确定窗口已消失", "iframe", "选择商品区域",
-            "在当前iframe", "识别完成", "最终添加按钮", "添加状态", "链接选品流程",
-            "滚动到页面", "立即投稿按钮", "JavaScript成功", "按钮消失", "按钮仍在",
-            "投稿处理结果", "投稿成功后等待中", "使用配置的", "等待中...", "📊 数据库",
+        # 🚫 只过滤技术细节，保留用户关心的流程信息
+        technical_filters = [
+            # 过于详细的技术步骤
+            "导航到", "智能等待", "尝试方法", "方法1成功", "JavaScript成功",
+            "✅ 找到", "✅ 已点击", "✅ 已输入", "✅ 已选中", "✅ 已选择",
+            "确定按钮已就绪", "确定窗口已消失", "iframe", "在当前iframe",
+            "滚动到页面", "按钮消失", "按钮仍在", "使用配置的",
             
-            # 账号和状态信息
-            "📋 账号选择状态", "📊 账号", "🔄 账号状态", "📂 已更新", "💾 保存",
-            "🔍 检查账号", "浏览器状态", "⚠️ 获取账号", "进度失败", "📂 上传记录",
-            "🔄 状态刷新", "-> 活跃", "-> 未活跃", "进度显示已更新",
+            # 系统状态细节
+            "📋 账号选择状态", "💾 保存", "📂 已更新", "🔍 检查账号",
+            "-> 活跃", "-> 未活跃", "浏览器状态", "🔄 状态刷新",
             
-            # 系统和性能信息
-            "🔧", "🎯", "💻", "📁", "🌐", "👤", "🚀 启动异步", "扫描进度",
-            "高性能", "缓存", "性能组件", "视频文件加载器", "异步更新", "后台处理"
+            # 性能调试信息
+            "🔧", "🎯", "💻", "🌐", "👤", "🚀 启动异步", "扫描进度",
+            "高性能", "缓存", "性能组件", "视频文件加载器", "异步更新"
         ]
         
         # 🚫 过滤DEBUG级别的消息
         if level == "DEBUG":
             return False
         
-        # 🚫 过滤详细的投稿步骤信息
-        for filter_keyword in verbose_filters:
+        # 🚫 过滤技术细节
+        for filter_keyword in technical_filters:
             if filter_keyword in message:
                 return False
         
@@ -1778,30 +1978,47 @@ class MainWindow(QMainWindow):
         else:
             self._last_logged_messages = set()
         
-        # 记录最近的消息，防止重复（最多记录30条）
-        if len(self._last_logged_messages) > 30:
+        # 记录最近的消息，防止重复（最多记录50条）
+        if len(self._last_logged_messages) > 50:
             self._last_logged_messages.clear()
         self._last_logged_messages.add(message)
         
-        # ✅ 只保留最核心的用户关心信息
-        critical_keywords = [
-            # 关键操作结果
-            "视频投稿成功", "投稿失败", "登录成功", "登录失败", "删除", "添加账号",
-            "开始批量上传", "上传完成", "上传失败", "程序启动", "构建", "初始化",
+        # ✅ 保留用户关心的重要信息
+        important_keywords = [
+            # 投稿流程关键步骤
+            "🚀 开始投稿", "视频上传完成", "📝 提取标题", "标题填写成功", 
+            "话题选择成功", "商品添加流程", "🎉 视频投稿成功", "投稿失败",
             
-            # 关键状态图标
-            "🎉", "❌", "⚠️", "🗑️", "💀", "🛑", "🚨", "🔥"
+            # 文件操作
+            "🗑️ 文件已删除", "📊 数据库记录", "📊 数据库标记",
+            
+            # 账号操作
+            "登录成功", "登录失败", "添加账号", "删除账号", "进度显示已更新",
+            
+            # 批量上传
+            "开始批量上传", "批量上传", "上传完成", "上传失败", "第.*个视频",
+            
+            # 程序状态
+            "程序启动", "启动完成", "构建", "初始化", "诊断",
+            
+            # 重要图标
+            "✅", "❌", "⚠️", "🚀", "🎉", "🗑️", "📝", "📊"
         ]
         
-        # 🔥 严格筛选：只显示关键错误、警告、成功和重要操作
-        if level in ["ERROR", "WARNING"] or any(keyword in message for keyword in critical_keywords):
+        # 💯 显示错误、警告和重要操作
+        if level in ["ERROR", "WARNING", "SUCCESS"]:
             return True
         
-        # 🔥 进一步限制：只显示非常简短的重要信息
-        if level == "SUCCESS" and len(message) < 50:
+        # 💯 显示包含重要关键词的信息
+        for keyword in important_keywords:
+            if keyword in message:
+                return True
+        
+        # 💯 显示简短的INFO信息
+        if level == "INFO" and len(message) < 80:
             return True
         
-        # 其他消息一律过滤
+        # 过滤其他冗长的技术细节
         return False
     
     def _flush_log_buffer(self):
@@ -2278,10 +2495,18 @@ class MainWindow(QMainWindow):
                 
                 # 选择框 - 直接使用保存的选择状态
                 checkbox = QCheckBox()
-                # 🎯 修复：直接使用_account_selections中的状态，新账号默认不选中
+                # 🎯 增强：使用保存的选择状态，新账号默认不选中
                 is_selected = False
                 if hasattr(self, '_account_selections') and username in self._account_selections:
-                    is_selected = self._account_selections[username]
+                    saved_state = self._account_selections[username]
+                    if isinstance(saved_state, bool):
+                        is_selected = saved_state
+                        # 🎯 调试：记录应用的选择状态（仅在有变化时）
+                        if not hasattr(self, '_logged_selection_restore'):
+                            self._logged_selection_restore = set()
+                        if username not in self._logged_selection_restore:
+                            self.log_message(f"📋 恢复账号选择状态: {username} = {is_selected}", "DEBUG")
+                            self._logged_selection_restore.add(username)
                 
                 checkbox.setChecked(is_selected)
                 checkbox.stateChanged.connect(self.on_account_selection_changed)
@@ -2356,8 +2581,9 @@ class MainWindow(QMainWindow):
                     else:
                         status, completed, published = f"0/{target_count}", False, 0
                     
-                    # 今日已发列
-                    today_published_item = QTableWidgetItem(str(published))
+                    # 今日已发列 - 🎯 修复：确保只显示纯数字
+                    published_count = published if isinstance(published, int) else 0
+                    today_published_item = QTableWidgetItem(str(published_count))
                     today_published_item.setTextAlignment(Qt.AlignCenter)
                     if completed:
                         today_published_item.setBackground(QColor(144, 238, 144))
@@ -2378,8 +2604,8 @@ class MainWindow(QMainWindow):
                     
                 except Exception as e:
                     # 如果获取进度失败，显示默认值
-                    self.account_table.setItem(row, 5, QTableWidgetItem("0"))
-                    self.account_table.setItem(row, 6, QTableWidgetItem("获取中..."))
+                    self.account_table.setItem(row, 5, QTableWidgetItem("0"))  # 今日已发：纯数字
+                    self.account_table.setItem(row, 6, QTableWidgetItem("获取中..."))  # 进度状态
                 
                 # 备注
                 notes = getattr(account, 'notes', "")
@@ -2392,7 +2618,8 @@ class MainWindow(QMainWindow):
             try:
                 target_count = int(self.videos_per_account_input.text()) if hasattr(self, 'videos_per_account_input') else 1
                 self._update_account_stats_with_progress(target_count)
-            except:
+            except Exception as e:
+                self.log_message(f"⚠️ 更新账号统计失败: {e}", "WARNING")
                 total_accounts = len(accounts)
                 active_accounts = 0
                 for a in accounts:
@@ -2512,7 +2739,7 @@ class MainWindow(QMainWindow):
                     display_text = f"{filename} ({size_mb:.1f}MB)"
                 except:
                     display_text = filename
-                    
+                
                 item = QListWidgetItem(display_text)
                 item.setData(Qt.UserRole, file_path)
                 self.video_list.addItem(item)
@@ -3246,15 +3473,18 @@ class MainWindow(QMainWindow):
                 username = username_item.text()
                 is_checked = checkbox.isChecked()
                 
-                # 🎯 关键修复：保存每个账号的选择状态
-                self._account_selections[username] = is_checked
-                current_status[username] = is_checked
+                # 🎯 关键修复：保存每个账号的选择状态（确保数据类型正确）
+                if username and isinstance(username, str):
+                    self._account_selections[username] = bool(is_checked)
+                    current_status[username] = bool(is_checked)
                 
                 if is_checked:
                     selected_count += 1
         
-        # 🎯 调试信息：显示当前选择状态
-        self.log_message(f"📋 账号选择状态变更: {current_status}", "DEBUG")
+        # 🎯 调试信息：显示当前选择状态（只在有选中账号时显示）
+        if selected_count > 0:
+            selected_accounts = [acc for acc, checked in current_status.items() if checked]
+            self.log_message(f"📋 已选择 {selected_count} 个账号: {selected_accounts}", "DEBUG")
         
         # 🎯 新增：保存选择状态到配置文件
         self.save_ui_settings()
@@ -3457,6 +3687,8 @@ class MainWindow(QMainWindow):
                 concurrent_browsers,
                 videos_per_account
             )
+            # 🎯 关键修复：设置主窗口引用，让线程能获取实时设置
+            self.batch_upload_thread.main_window = self
             # 🎯 修复：直接传递account_service给线程
             self.batch_upload_thread.account_service = self.account_service
             self.batch_upload_thread.upload_progress.connect(self.on_batch_upload_progress)
@@ -3520,6 +3752,26 @@ class MainWindow(QMainWindow):
         except Exception as e:
             # 静默处理错误
             pass
+
+    def on_account_progress_updated(self, account_name):
+        """处理账号进度更新信号 - 修复：投稿成功后更新详细统计"""
+        try:
+            # 🎯 修复：获取当前的目标视频数量
+            try:
+                target_videos_per_account = int(self.videos_per_account_input.text()) if hasattr(self, 'videos_per_account_input') else 1
+            except (ValueError, AttributeError):
+                target_videos_per_account = 1
+            
+            # 刷新账号列表以更新进度显示
+            self.refresh_accounts()
+            
+            # 🎯 关键修复：投稿成功后立即更新详细的统计信息
+            self._update_account_stats_with_progress(target_videos_per_account)
+            
+            self.log_message(f"📊 投稿成功后已更新进度和统计信息: {account_name}", "INFO")
+            
+        except Exception as e:
+            self.log_message(f"❌ 更新账号进度显示失败: {e}", "ERROR")
     
     def load_ui_settings(self):
         """加载界面设置"""
@@ -3543,11 +3795,21 @@ class MainWindow(QMainWindow):
                 self.video_dir_edit.setText(video_directory)
                 self.refresh_video_list()  # 自动加载视频列表
             
-            # 🎯 新增：加载账号选择状态
+            # 🎯 增强：加载账号选择状态
             saved_selections = ui_settings.get('account_selections', {})
-            if saved_selections:
-                self._account_selections = saved_selections
-                self.log_message(f"📋 已加载账号选择状态: {saved_selections}", "INFO")
+            if saved_selections and isinstance(saved_selections, dict):
+                # 🎯 修复：确保选择状态是有效的布尔值
+                cleaned_selections = {}
+                for account, selected in saved_selections.items():
+                    if isinstance(account, str) and isinstance(selected, bool):
+                        cleaned_selections[account] = selected
+                
+                self._account_selections = cleaned_selections
+                if cleaned_selections:
+                    self.log_message(f"📋 已加载账号选择状态: {len(cleaned_selections)} 个账号", "INFO")
+                else:
+                    self.log_message("📋 选择状态数据无效，使用默认设置", "INFO")
+                    self._account_selections = {}
             else:
                 self._account_selections = {}
                 self.log_message("📋 未找到保存的账号选择状态，使用默认设置", "INFO")
@@ -4349,450 +4611,248 @@ class MainWindow(QMainWindow):
 3. 在许可证管理页面激活
 """
 
-
-
-    def on_account_progress_updated(self, account_name):
-        """🎯 处理账号进度更新事件 - 优化版：避免UI阻塞"""
+    def on_videos_per_account_changed(self):
+        """处理每账号视频数量变化"""
         try:
-            self.log_message(f"📊 账号 {account_name} 发布进度已更新，刷新显示", "INFO")
-            
-            # 🎯 关键修复1：使用缓存避免重复文件读取
-            if not hasattr(self, '_progress_cache'):
-                self._progress_cache = {}
-                self._progress_cache_time = {}
-            
-            # 获取目标数量
-            target_count = 1
+            # 获取新的视频数量设置
             if hasattr(self, 'videos_per_account_input'):
                 try:
-                    target_count = int(self.videos_per_account_input.text())
-                except:
-                    target_count = 1
+                    videos_per_account = int(self.videos_per_account_input.text())
+                    # 🎯 立即更新账号统计信息，使用新的目标数量
+                    self._async_update_account_stats(videos_per_account)
+                    self.log_message(f"📊 每账号视频数量已更新为: {videos_per_account}", "INFO")
+                except ValueError:
+                    # 如果输入的不是有效数字，使用默认值1
+                    self.log_message("⚠️ 输入的视频数量无效，使用默认值1", "WARNING")
+                    self._async_update_account_stats(1)
+        except Exception as e:
+            self.log_message(f"❌ 处理视频数量变化失败: {e}", "ERROR")
+
+    def _async_update_account_stats(self, target_videos_per_account):
+        """异步更新账号统计信息 - 修复进度状态显示"""
+        try:
+            # 获取所有账号
+            accounts = self.core_app.account_manager.get_all_accounts()
+            if not accounts:
+                return
             
-            # 🎯 关键修复2：只更新指定账号，不遍历所有账号
-            # 查找对应的表格行并更新进度
+            # 更新界面中的账号进度信息
             for row in range(self.account_table.rowCount()):
-                username_item = self.account_table.item(row, 1)
-                if username_item and username_item.text() == account_name:
+                try:
+                    username_item = self.account_table.item(row, 1)  # 用户名列
+                    if not username_item:
+                        continue
+                    
+                    username = username_item.text()
+                    account = self.core_app.account_manager.get_account(username)
+                    if not account:
+                        continue
+                    
+                    # 获取该账号的上传进度 - 🎯 修复：使用与原始方法相同的数据源
                     try:
-                        # 🎯 关键修复3：使用缓存或异步获取进度
-                        cache_key = f"{account_name}_{target_count}"
-                        current_time = time.time()
-                        
-                        # 检查缓存是否有效（5秒内）
-                        if (cache_key in self._progress_cache and 
-                            cache_key in self._progress_cache_time and
-                            current_time - self._progress_cache_time[cache_key] < 5):
-                            
-                            status, completed, published = self._progress_cache[cache_key]
-                            self.log_message(f"📋 使用缓存数据: {account_name} -> {status}", "DEBUG")
+                        if hasattr(self, 'account_service') and self.account_service:
+                            progress_text, is_completed, uploaded_count = self.account_service.get_account_progress(username, target_videos_per_account)
                         else:
-                            # 缓存过期或不存在，重新获取（但限制频率）
-                            if hasattr(self, 'account_service') and self.account_service:
-                                status, completed, published = self.account_service.get_account_progress(account_name, target_count)
+                            progress_text, is_completed, uploaded_count = self.core_app.database_manager.get_account_progress(
+                                username, target_videos_per_account
+                            )
+                        
+                        # 🎯 修复：正确设置今日已发列（第5列）和进度状态列（第6列）
+                        from PyQt5.QtWidgets import QTableWidgetItem
+                        from PyQt5.QtCore import Qt
+                        from PyQt5.QtGui import QColor
+                        
+                        # 第5列：今日已发 - 显示纯数字
+                        if self.account_table.columnCount() > 5:
+                            today_item = self.account_table.item(row, 5)
+                            if today_item:
+                                today_item.setText(str(uploaded_count))
+                            else:
+                                today_item = QTableWidgetItem(str(uploaded_count))
+                                today_item.setTextAlignment(Qt.AlignCenter)
+                                if is_completed:
+                                    today_item.setBackground(QColor(144, 238, 144))
+                                else:
+                                    today_item.setBackground(QColor(255, 255, 200))
+                                self.account_table.setItem(row, 5, today_item)
+                        
+                        # 第6列：进度状态 - 显示分数格式加状态文字
+                        if self.account_table.columnCount() > 6:
+                            progress_item = self.account_table.item(row, 6)
+                            if progress_item:
+                                progress_item.setText(progress_text)
+                            else:
+                                progress_item = QTableWidgetItem(progress_text)
+                                progress_item.setTextAlignment(Qt.AlignCenter)
+                                if is_completed:
+                                    progress_item.setBackground(QColor(144, 238, 144))
+                                    progress_item.setForeground(QColor(0, 100, 0))
+                                else:
+                                    progress_item.setBackground(QColor(255, 255, 200))
+                                    progress_item.setForeground(QColor(100, 100, 0))
+                                self.account_table.setItem(row, 6, progress_item)
                                 
-                                # 更新缓存
-                                self._progress_cache[cache_key] = (status, completed, published)
-                                self._progress_cache_time[cache_key] = current_time
-                            else:
-                                status, completed, published = f"0/{target_count}", False, 0
-
-                        # 更新今日已发列（第5列）
-                        today_published_item = self.account_table.item(row, 5)
-                        if today_published_item:
-                            today_published_item.setText(str(published))
-                            if completed:
-                                today_published_item.setBackground(QColor(144, 238, 144))  # 已完成：绿色
-                            else:
-                                today_published_item.setBackground(QColor(255, 255, 200))  # 进行中：淡黄色
-                        
-                        # 更新进度状态列（第6列）
-                        progress_item = self.account_table.item(row, 6)
-                        if progress_item:
-                            progress_item.setText(status)
-                            if completed:
-                                progress_item.setBackground(QColor(144, 238, 144))  # 已完成：绿色
-                                progress_item.setForeground(QColor(0, 100, 0))     # 深绿色字体
-                            else:
-                                progress_item.setBackground(QColor(255, 255, 200))  # 进行中：淡黄色
-                                progress_item.setForeground(QColor(100, 100, 0))   # 深黄色字体
-                        
-                        self.log_message(f"✅ 账号 {account_name} 进度显示已更新: {status}", "SUCCESS")
-                        
-                        # 🎯 关键修复4：延迟和异步执行统计更新，避免阻塞UI
-                        # 使用QTimer延迟执行，避免在投稿流程中阻塞
-                        if not hasattr(self, '_stats_update_timer'):
-                            from PyQt5.QtCore import QTimer
-                            self._stats_update_timer = QTimer()
-                            self._stats_update_timer.setSingleShot(True)
-                            self._stats_update_timer.timeout.connect(lambda: self._async_update_account_stats(target_count))
-                        
-                        # 延迟1秒执行统计更新，避免在投稿关键时刻阻塞
-                        self._stats_update_timer.start(1000)
-                        
-                        break
-                        
                     except Exception as e:
-                        # 如果获取进度失败，显示错误状态
-                        today_published_item = self.account_table.item(row, 5)
-                        if today_published_item:
-                            today_published_item.setText("错误")
-                            today_published_item.setBackground(QColor(255, 182, 193))  # 错误：红色
-                        
-                        progress_item = self.account_table.item(row, 6)
-                        if progress_item:
-                            progress_item.setText("获取失败")
-                            progress_item.setBackground(QColor(255, 182, 193))  # 错误：红色
-                            progress_item.setForeground(QColor(100, 0, 0))     # 深红色字体
-                        
-                        self.log_message(f"❌ 更新账号 {account_name} 进度显示失败: {e}", "ERROR")
-                        break
+                        # 🎯 修复：只在真正获取失败时设置默认值，并记录错误
+                        self.log_message(f"⚠️ 获取账号 {username} 进度失败: {e}", "DEBUG")
+                        from PyQt5.QtWidgets import QTableWidgetItem
+                        if self.account_table.columnCount() > 5:
+                            today_item = QTableWidgetItem("0")  # 今日已发：纯数字
+                            self.account_table.setItem(row, 5, today_item)
+                        if self.account_table.columnCount() > 6:
+                            progress_item = QTableWidgetItem(f"0/{target_videos_per_account} 进行中")  # 进度状态：带状态文字
+                            self.account_table.setItem(row, 6, progress_item)
+                    
+                except Exception as e:
+                    continue
+            
+            # 🎯 关键修复：调用详细统计信息更新，而不是简单统计
+            self._update_account_stats_with_progress(target_videos_per_account)
+            
+            self.log_message(f"📊 账号统计已更新，目标数量: {target_videos_per_account}", "INFO")
             
         except Exception as e:
-            self.log_message(f"❌ 处理账号进度更新事件失败: {str(e)}", "ERROR")
+            self.log_message(f"❌ 更新账号统计失败: {e}", "ERROR")
 
-    def _async_update_account_stats(self, target_count):
-        """🎯 异步更新账号统计，避免阻塞UI线程"""
+    def _update_account_stats_with_progress(self, target_videos_per_account):
+        """更新带有进度信息的账号统计"""
         try:
-            # 🎯 关键修复：检查task_queue是否真正可用（不是DummyManager）
-            if (hasattr(self, 'task_queue') and self.task_queue and 
-                hasattr(self.task_queue, 'submit') and callable(self.task_queue.submit)):
-                
-                def stats_task():
-                    return self._calculate_account_stats(target_count)
-                
-                def on_stats_complete(stats_result):
-                    if stats_result and hasattr(self, 'account_stats_label'):
-                        self.account_stats_label.setText(stats_result)
-                
-                # 使用任务队列异步执行
-                self.task_queue.submit(stats_task, callback=on_stats_complete, name="update_account_stats")
-            else:
-                # 后备方案：直接计算（但限制频率）
-                if not hasattr(self, '_last_stats_update') or time.time() - self._last_stats_update > 3:
-                    self._last_stats_update = time.time()
-                    stats_text = self._calculate_account_stats(target_count)
-                    if stats_text and hasattr(self, 'account_stats_label'):
-                        self.account_stats_label.setText(stats_text)
-                        
-        except Exception as e:
-            # 🎯 修复：使用后备方案，避免阻塞
-            try:
-                if not hasattr(self, '_last_stats_update') or time.time() - self._last_stats_update > 3:
-                    self._last_stats_update = time.time()
-                    stats_text = self._calculate_account_stats(target_count)
-                    if stats_text and hasattr(self, 'account_stats_label'):
-                        self.account_stats_label.setText(stats_text)
-            except:
-                pass  # 静默处理后备方案失败
-            self.log_message(f"❌ 异步更新账号统计失败，已使用后备方案: {e}", "WARNING")
-
-    def _calculate_account_stats(self, target_count):
-        """🎯 计算账号统计信息（可以在后台线程中执行）"""
-        try:
-            if not hasattr(self, 'account_table'):
-                return None
+            # 获取所有账号
+            accounts = self.core_app.account_manager.get_all_accounts()
+            if not accounts:
+                if hasattr(self, 'account_stats_label'):
+                    self.account_stats_label.setText("账号统计：无账号")
+                return
             
-            total_accounts = 0
+            # 统计变量
+            total_accounts = len(accounts)
             active_accounts = 0
             completed_accounts = 0
             in_progress_accounts = 0
+            total_uploaded_today = 0
             
-            # 🎯 优化：使用缓存数据，避免重复文件IO
-            cache = getattr(self, '_progress_cache', {})
-            
-            # 遍历账号表格统计信息
-            for row in range(self.account_table.rowCount()):
-                username_item = self.account_table.item(row, 1)
-                login_status_item = self.account_table.item(row, 2)
+            # 逐个分析账号
+            for username in accounts:
+                account = self.core_app.account_manager.get_account(username)
+                if not account:
+                    continue
                 
-                if username_item:
-                    total_accounts += 1
-                    username = username_item.text()
-                    
-                    # 统计活跃账号（登录状态为"已登录"）
-                    if login_status_item and "已登录" in login_status_item.text():
-                        active_accounts += 1
-                    
-                    # 🎯 优先使用缓存数据统计完成状态
-                    cache_key = f"{username}_{target_count}"
-                    if cache_key in cache:
-                        status, completed, published = cache[cache_key]
+                # 检查账号是否活跃（已登录）
+                # 兼容dict和Account对象格式
+                if hasattr(account, '_data'):
+                    # TempAccount包装对象
+                    account_status = account.status
+                    account_cookies = account.cookies
+                elif isinstance(account, dict):
+                    # 原始dict格式
+                    account_status = account.get('status', 'inactive')
+                    account_cookies = account.get('cookies', [])
+                else:
+                    # Account对象格式
+                    account_status = account.status
+                    account_cookies = getattr(account, 'cookies', [])
+                
+                is_logged_in = (account_status == 'active' and 
+                               account_cookies and 
+                               len(account_cookies) > 0)
+                
+                if is_logged_in:
+                    active_accounts += 1
+                
+                # 获取投稿进度
+                try:
+                    if hasattr(self, 'account_service') and self.account_service:
+                        status, completed, published = self.account_service.get_account_progress(username, target_videos_per_account)
+                        total_uploaded_today += published
+                        
                         if completed:
                             completed_accounts += 1
                         elif published > 0:
                             in_progress_accounts += 1
                     else:
-                        # 缓存中没有数据，暂时跳过（避免阻塞）
-                        pass
-            
-            # 构建统计信息文本
-            stats_text = (
-                f"账号统计：总数 {total_accounts}，活跃 {active_accounts} | "
-                f"进度：已完成 {completed_accounts}，进行中 {in_progress_accounts}，"
-                f"未开始 {total_accounts - completed_accounts - in_progress_accounts}"
-            )
-            
-            return stats_text
-            
-        except Exception as e:
-            self.log_message(f"❌ 计算账号统计失败: {e}", "WARNING")
-            return None
-
-    def on_videos_per_account_changed(self):
-        """🎯 处理每账号视频数量变化事件 - 实时更新所有账号的进度显示"""
-        try:
-            # 获取新的目标数量
-            try:
-                new_target = int(self.videos_per_account_input.text())
-                if new_target <= 0:
-                    return  # 无效数量，不更新
-            except (ValueError, AttributeError):
-                return  # 无效输入，不更新
-            
-            # 如果账号表格不存在，直接返回
-            if not hasattr(self, 'account_table') or not self.account_table:
-                return
-            
-            # from core.account_manager import account_manager
-            
-            # 遍历表格中的所有账号并更新进度
-            updated_count = 0
-            for row in range(self.account_table.rowCount()):
-                username_item = self.account_table.item(row, 1)
-                if username_item:
-                    username = username_item.text()
-                    
-                    try:
-                        # 🎯 使用新的目标数量重新计算进度
-                        if hasattr(self, 'account_service') and self.account_service:
-                            status, completed, published = self.account_service.get_account_progress(username, new_target)
-                        else:
-                            status, completed, published = f"0/{new_target}", False, 0
-
-                        # 更新今日已发列（第5列） - 这个数量不变
-                        today_published_item = self.account_table.item(row, 5)
-                        if today_published_item:
-                            today_published_item.setText(str(published))
-                            # 根据新目标判断完成状态并设置背景色
-                            if completed:
-                                today_published_item.setBackground(QColor(144, 238, 144))  # 已完成：绿色
-                            else:
-                                today_published_item.setBackground(QColor(255, 255, 200))  # 进行中：淡黄色
+                        # 如果没有account_service，直接查询数据库
+                        from database.database_manager import db_manager
+                        status, completed, published = db_manager.get_account_progress(username, target_videos_per_account)
+                        total_uploaded_today += published
                         
-                        # 🎯 更新进度状态列（第6列） - 这个会根据新目标显示不同的状态
-                        progress_item = self.account_table.item(row, 6)
-                        if progress_item:
-                            progress_item.setText(status)  # 新的状态字符串，如 "5/10 进行中"
-                            if completed:
-                                progress_item.setBackground(QColor(144, 238, 144))  # 已完成：绿色
-                                progress_item.setForeground(QColor(0, 100, 0))     # 深绿色字体
-                            else:
-                                progress_item.setBackground(QColor(255, 255, 200))  # 进行中：淡黄色
-                                progress_item.setForeground(QColor(100, 100, 0))   # 深黄色字体
-                        
-                        updated_count += 1
-                        
-                    except Exception as e:
-                        # 如果获取进度失败，显示错误状态
-                        today_published_item = self.account_table.item(row, 5)
-                        if today_published_item:
-                            today_published_item.setText("错误")
-                            today_published_item.setBackground(QColor(255, 182, 193))  # 错误：红色
-                        
-                        progress_item = self.account_table.item(row, 6)
-                        if progress_item:
-                            progress_item.setText("获取失败")
-                            progress_item.setBackground(QColor(255, 182, 193))  # 错误：红色
-                            progress_item.setForeground(QColor(100, 0, 0))     # 深红色字体
-            
-            if updated_count > 0:
-                self.log_message(f"📊 目标数量已更新为 {new_target}，已刷新 {updated_count} 个账号的进度显示", "INFO")
-                
-                # 🎯 新增：同时更新账号统计信息，显示完成状态
-                self._update_account_stats_with_progress(new_target)
-            
-        except Exception as e:
-            self.log_message(f"❌ 更新账号进度显示失败: {str(e)}", "ERROR")
-
-    def _update_account_stats_with_progress(self, target_count):
-        """🎯 更新带有进度信息的账号统计显示"""
-        try:
-            if not hasattr(self, 'account_stats_label') or not hasattr(self, 'account_table'):
-                return
-            
-            # from core.account_manager import account_manager
-            
-            total_accounts = 0
-            active_accounts = 0
-            completed_accounts = 0
-            in_progress_accounts = 0
-            
-            # 遍历账号表格统计信息
-            for row in range(self.account_table.rowCount()):
-                username_item = self.account_table.item(row, 1)
-                login_status_item = self.account_table.item(row, 2)
-                
-                if username_item:
-                    total_accounts += 1
-                    username = username_item.text()
-                    
-                    # 统计活跃账号（登录状态为"已登录"）
-                    if login_status_item and "已登录" in login_status_item.text():
-                        active_accounts += 1
-                    
-                    # 统计完成状态
-                    try:
-                        if hasattr(self, 'account_service') and self.account_service:
-                            status, completed, published = self.account_service.get_account_progress(username, target_count)
-                        else:
-                            status, completed, published = f"0/{target_count}", False, 0
-                            
                         if completed:
                             completed_accounts += 1
                         elif published > 0:
                             in_progress_accounts += 1
-                    except:
-                        pass  # 忽略获取进度失败的情况
+                            
+                except Exception as e:
+                    self.log_message(f"⚠️ 获取账号 {username} 进度失败: {e}", "DEBUG")
+                    continue
             
-            # 构建统计信息文本
-            stats_text = (
-                f"账号统计：总数 {total_accounts}，活跃 {active_accounts} | "
-                f"进度：已完成 {completed_accounts}，进行中 {in_progress_accounts}，"
-                f"未开始 {total_accounts - completed_accounts - in_progress_accounts}"
-            )
+            # 计算剩余待处理账号
+            pending_accounts = total_accounts - completed_accounts - in_progress_accounts
             
-            self.account_stats_label.setText(stats_text)
+            # 生成统计文本
+            stats_parts = []
+            stats_parts.append(f"总数 {total_accounts}")
+            stats_parts.append(f"已登录 {active_accounts}")
+            stats_parts.append(f"已完成 {completed_accounts}")
+            
+            if in_progress_accounts > 0:
+                stats_parts.append(f"进行中 {in_progress_accounts}")
+            
+            if pending_accounts > 0:
+                stats_parts.append(f"待处理 {pending_accounts}")
+                
+            stats_parts.append(f"今日总发布 {total_uploaded_today}")
+            
+            stats_text = f"账号统计：{' | '.join(stats_parts)}"
+            
+            # 更新显示
+            if hasattr(self, 'account_stats_label'):
+                self.account_stats_label.setText(stats_text)
+                
+            self.log_message(f"📊 账号统计已更新: {stats_text}", "DEBUG")
             
         except Exception as e:
-            # 如果更新失败，回退到基本统计
+            self.log_message(f"❌ 更新账号统计失败: {e}", "ERROR")
+            # 回退到简单统计
             try:
                 accounts = self.core_app.account_manager.get_all_accounts()
-                total_accounts = len(accounts)
-                active_accounts = 0
-                for a in accounts:
-                    account = self.core_app.account_manager.get_account(a)
-                    if account:
-                        # 兼容dict和Account对象格式
-                        if hasattr(account, '_data'):
-                            # TempAccount包装对象
-                            account_status = account.status
-                        elif isinstance(account, dict):
-                            # 原始dict格式
-                            account_status = account.get('status', 'inactive')
-                        else:
-                            # Account对象格式
-                            account_status = account.status
-                        
-                        if account_status == 'active':
-                            active_accounts += 1
-                stats_text = f"账号统计：总数 {total_accounts}，活跃 {active_accounts}"
-                self.account_stats_label.setText(stats_text)
+                simple_stats = f"账号统计：总数 {len(accounts)} (统计功能异常)"
+                if hasattr(self, 'account_stats_label'):
+                    self.account_stats_label.setText(simple_stats)
             except:
                 pass
 
-    def _update_video_pagination_buttons(self, current_page, total_pages):
-        """更新视频文件分页按钮状态"""
-        # 🔧 新增：视频文件分页控制
-        if not hasattr(self, '_video_pagination_created'):
-            self._create_video_pagination_buttons()
-            self._video_pagination_created = True
-        
-        # 更新按钮状态
-        if hasattr(self, '_video_prev_btn'):
-            self._video_prev_btn.setEnabled(current_page > 0)
-        
-        if hasattr(self, '_video_next_btn'):
-            self._video_next_btn.setEnabled(current_page < total_pages - 1)
-        
-        # 更新页码信息
-        if hasattr(self, '_video_page_label'):
-            if total_pages > 1:
-                self._video_page_label.setText(f"第 {current_page + 1}/{total_pages} 页")
-                self._video_page_label.setVisible(True)
-            else:
-                self._video_page_label.setVisible(False)
-        
-        # 显示/隐藏分页控件
-        show_pagination = total_pages > 1
-        if hasattr(self, '_video_pagination_widget'):
-            self._video_pagination_widget.setVisible(show_pagination)
-    
-    def _create_video_pagination_buttons(self):
-        """创建视频文件分页控制按钮"""
+    def test_account_selection_state(self):
+        """🎯 测试账号选择状态的保存和读取功能"""
         try:
-            from PyQt5.QtWidgets import QWidget, QHBoxLayout, QPushButton, QLabel
-            from PyQt5.QtCore import Qt
+            self.log_message("🔧 开始测试账号选择状态...", "INFO")
             
-            # 创建分页控件容器
-            self._video_pagination_widget = QWidget()
-            pagination_layout = QHBoxLayout()
-            pagination_layout.setContentsMargins(5, 5, 5, 5)
+            # 检查内存中的选择状态
+            if hasattr(self, '_account_selections'):
+                self.log_message(f"📋 内存中的选择状态: {len(self._account_selections)} 个账号", "INFO")
+                for account, selected in self._account_selections.items():
+                    status = "已选中" if selected else "未选中"
+                    self.log_message(f"   {account}: {status}", "INFO")
+            else:
+                self.log_message("❌ 内存中无选择状态数据", "WARNING")
             
-            # 上一页按钮
-            self._video_prev_btn = QPushButton("◀ 上一页")
-            self._video_prev_btn.setMaximumWidth(80)
-            self._video_prev_btn.clicked.connect(self._video_prev_page)
-            pagination_layout.addWidget(self._video_prev_btn)
+            # 检查配置文件中的选择状态
+            try:
+                config = self.core_app.config_manager.load_config()
+                saved_selections = config.get('ui_settings', {}).get('account_selections', {})
+                if saved_selections:
+                    self.log_message(f"💾 配置文件中的选择状态: {len(saved_selections)} 个账号", "INFO")
+                    for account, selected in saved_selections.items():
+                        status = "已选中" if selected else "未选中"
+                        self.log_message(f"   {account}: {status}", "INFO")
+                else:
+                    self.log_message("📋 配置文件中无选择状态数据", "INFO")
+            except Exception as e:
+                self.log_message(f"❌ 读取配置文件失败: {e}", "ERROR")
             
-            # 页码信息
-            self._video_page_label = QLabel("第 1/1 页")
-            self._video_page_label.setAlignment(Qt.AlignCenter)
-            self._video_page_label.setMinimumWidth(80)
-            pagination_layout.addWidget(self._video_page_label)
+            # 检查界面实际显示状态
+            selected_in_ui = self.get_selected_accounts()
+            self.log_message(f"🖥️ 界面实际选中: {len(selected_in_ui)} 个账号 - {selected_in_ui}", "INFO")
             
-            # 下一页按钮
-            self._video_next_btn = QPushButton("下一页 ▶")
-            self._video_next_btn.setMaximumWidth(80)
-            self._video_next_btn.clicked.connect(self._video_next_page)
-            pagination_layout.addWidget(self._video_next_btn)
-            
-            pagination_layout.addStretch()
-            self._video_pagination_widget.setLayout(pagination_layout)
-            
-            # 🔧 将分页控件添加到视频列表下方
-            if hasattr(self, 'video_list') and self.video_list.parent():
-                parent_layout = self.video_list.parent().layout()
-                if parent_layout:
-                    # 找到video_list的位置，在其后插入分页控件
-                    for i in range(parent_layout.count()):
-                        widget_item = parent_layout.itemAt(i)
-                        if widget_item and widget_item.widget() == self.video_list:
-                            parent_layout.insertWidget(i + 1, self._video_pagination_widget)
-                            break
-            
-            # 初始状态隐藏
-            self._video_pagination_widget.setVisible(False)
+            self.log_message("✅ 账号选择状态测试完成", "SUCCESS")
             
         except Exception as e:
-            self.log_message(f"⚠️ 创建视频分页控件失败: {e}", "WARNING")
-    
-    def _video_prev_page(self):
-        """视频文件上一页"""
-        if hasattr(self, 'video_loader_manager') and self.video_loader_manager:
-            # 🚀 使用高性能加载器的分页
-            if self.video_loader_manager.prev_page():
-                self.log_message("📄 已切换到上一页", "DEBUG")
-        else:
-            # 传统分页方式
-            current_page = getattr(self, '_current_video_page', 0)
-            if current_page > 0:
-                self._current_video_page = current_page - 1
-                self.refresh_video_list()
-                self.log_message(f"📖 切换到第 {self._current_video_page + 1} 页", "INFO")
-    
-    def _video_next_page(self):
-        """视频文件下一页"""
-        if hasattr(self, 'video_loader_manager') and self.video_loader_manager:
-            # 🚀 使用高性能加载器的分页
-            if self.video_loader_manager.next_page():
-                self.log_message("📄 已切换到下一页", "DEBUG")
-        else:
-            # 传统分页方式
-            current_page = getattr(self, '_current_video_page', 0)
-            self._current_video_page = current_page + 1
-            self.refresh_video_list()
-            self.log_message(f"📖 切换到第 {self._current_video_page + 1} 页", "INFO")
-
-
-
+            self.log_message(f"❌ 测试账号选择状态失败: {e}", "ERROR")

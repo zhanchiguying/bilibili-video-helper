@@ -317,16 +317,18 @@ class DatabaseManager:
     
     def get_account_progress(self, username: str, target_count: int = 1, 
                            date: str = None) -> Tuple[str, bool, int]:
-        """获取账号进度信息"""
+        """获取账号进度信息 - 修复：已上传视频无论文件是否删除都计入进度"""
         if date is None:
             date = datetime.now().strftime("%Y-%m-%d")
         
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
+                # 🎯 关键修复：移除 AND deleted = 0 条件
+                # 已上传的视频，无论本地文件是否删除，都应该计入上传进度
                 cursor.execute('''
                     SELECT COUNT(*) FROM uploaded_videos 
-                    WHERE account_username = ? AND upload_date = ? AND deleted = 0
+                    WHERE account_username = ? AND upload_date = ?
                 ''', (username, date))
                 
                 published_count = cursor.fetchone()[0]
@@ -360,13 +362,15 @@ class DatabaseManager:
             return False
     
     def is_video_uploaded(self, md5_hash: str) -> bool:
-        """检查视频是否已上传"""
+        """检查视频是否已上传 - 修复：已上传视频无论文件是否删除都视为已上传"""
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
+                # 🎯 关键修复：移除 AND deleted = 0 条件
+                # 已上传的视频，无论本地文件是否删除，都视为已上传，避免重复上传
                 cursor.execute('''
                     SELECT COUNT(*) FROM uploaded_videos 
-                    WHERE md5_hash = ? AND deleted = 0
+                    WHERE md5_hash = ?
                 ''', (md5_hash,))
                 return cursor.fetchone()[0] > 0
         except Exception as e:
@@ -509,9 +513,10 @@ class DatabaseManager:
                 ''', (today,))
                 today_active_accounts = cursor.fetchone()[0]
                 
+                # 🎯 关键修复：移除 AND deleted = 0 条件，已上传视频都计入统计
                 cursor.execute('''
                     SELECT COUNT(*) FROM uploaded_videos 
-                    WHERE upload_date = ? AND deleted = 0
+                    WHERE upload_date = ?
                 ''', (today,))
                 today_uploads = cursor.fetchone()[0]
                 
@@ -708,14 +713,14 @@ class DatabaseManager:
                 
                 # 使用IN查询批量获取所有账号的进度
                 placeholders = ','.join(['?' for _ in usernames])
+                # 🎯 关键修复：移除 AND deleted = 0 条件
                 query = f'''
                     SELECT 
                         account_username,
                         COUNT(*) as upload_count
                     FROM uploaded_videos 
                     WHERE account_username IN ({placeholders}) 
-                        AND upload_date = ? 
-                        AND deleted = 0
+                        AND upload_date = ?
                     GROUP BY account_username
                 '''
                 
@@ -743,6 +748,117 @@ class DatabaseManager:
         except Exception as e:
             self.logger.error(f"批量获取账号进度失败: {e}")
             return {username: ("获取失败", False, 0) for username in usernames}
+
+    # ================== 数据修复工具 ==================
+    
+    def fix_deleted_upload_records(self, days: int = 7) -> int:
+        """
+        修复被错误标记为删除的上传记录
+        
+        Args:
+            days: 修复最近几天的记录，默认7天
+            
+        Returns:
+            int: 修复的记录数量
+        """
+        try:
+            # 计算日期范围
+            from datetime import datetime, timedelta
+            start_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+            
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                # 查找最近被标记为删除的记录
+                cursor.execute('''
+                    SELECT id, md5_hash, filename, account_username, upload_date
+                    FROM uploaded_videos 
+                    WHERE deleted = 1 AND upload_date >= ?
+                    ORDER BY upload_date DESC, created_at DESC
+                ''', (start_date,))
+                
+                deleted_records = cursor.fetchall()
+                
+                if not deleted_records:
+                    self.logger.info("✅ 没有找到需要修复的删除记录")
+                    return 0
+                
+                # 将这些记录恢复为未删除状态
+                record_ids = [record[0] for record in deleted_records]
+                placeholders = ','.join(['?' for _ in record_ids])
+                
+                cursor.execute(f'''
+                    UPDATE uploaded_videos 
+                    SET deleted = 0 
+                    WHERE id IN ({placeholders})
+                ''', record_ids)
+                
+                conn.commit()
+                fixed_count = cursor.rowcount
+                
+                self.logger.info(f"✅ 修复了 {fixed_count} 条被错误标记为删除的上传记录")
+                
+                # 显示修复的记录详情
+                for record in deleted_records[:10]:  # 最多显示10条
+                    _, md5_hash, filename, account, upload_date = record
+                    self.logger.info(f"   📊 恢复: {account} - {filename} ({upload_date})")
+                
+                if len(deleted_records) > 10:
+                    self.logger.info(f"   ... 还有 {len(deleted_records) - 10} 条记录已恢复")
+                
+                return fixed_count
+                
+        except Exception as e:
+            self.logger.error(f"修复删除记录失败: {e}")
+            return 0
+    
+    def get_deleted_records_summary(self, days: int = 7) -> dict:
+        """
+        获取被删除记录的统计信息
+        
+        Args:
+            days: 统计最近几天的记录
+            
+        Returns:
+            dict: 统计信息
+        """
+        try:
+            from datetime import datetime, timedelta
+            start_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+            
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                # 按账号统计被删除的记录
+                cursor.execute('''
+                    SELECT 
+                        account_username,
+                        COUNT(*) as deleted_count,
+                        upload_date
+                    FROM uploaded_videos 
+                    WHERE deleted = 1 AND upload_date >= ?
+                    GROUP BY account_username, upload_date
+                    ORDER BY upload_date DESC, deleted_count DESC
+                ''', (start_date,))
+                
+                deleted_summary = cursor.fetchall()
+                
+                # 总计
+                cursor.execute('''
+                    SELECT COUNT(*) FROM uploaded_videos 
+                    WHERE deleted = 1 AND upload_date >= ?
+                ''', (start_date,))
+                total_deleted = cursor.fetchone()[0]
+                
+                return {
+                    'total_deleted': total_deleted,
+                    'by_account_date': [dict(zip(['account', 'count', 'date'], row)) for row in deleted_summary],
+                    'days': days
+                }
+                
+        except Exception as e:
+            self.logger.error(f"获取删除记录统计失败: {e}")
+            return {'total_deleted': 0, 'by_account_date': [], 'days': days}
 
 
 # 全局数据库实例
