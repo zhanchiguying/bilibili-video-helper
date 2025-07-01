@@ -92,31 +92,31 @@ class BrowserUploadThread(QThread):
         try:
             # 🔍 步骤1：验证文件存在性
             if not os.path.exists(file_path):
-                self.upload_status.emit(f"❌ 文件不存在: {os.path.basename(file_path)}")
+                self.upload_status.emit(f"❌ [{self.account_name}] 文件不存在: {os.path.basename(file_path)}")
                 return False
             
             # 🔍 步骤2：计算文件MD5（增强错误处理）
-            self.upload_status.emit(f"🔍 开始计算MD5: {os.path.basename(file_path)}")
+            self.upload_status.emit(f"🔍 [{self.account_name}] 开始计算MD5: {os.path.basename(file_path)}")
             hash_md5 = hashlib.md5()
             try:
                 file_size = os.path.getsize(file_path)
-                self.upload_status.emit(f"📊 文件大小: {file_size} 字节")
+                self.upload_status.emit(f"📊 [{self.account_name}] 文件大小: {file_size} 字节")
                 
                 with open(file_path, "rb") as f:
                     for chunk in iter(lambda: f.read(4096), b""):
                         hash_md5.update(chunk)
                 
                 md5_hash = hash_md5.hexdigest()
-                self.upload_status.emit(f"✅ MD5计算完成: {md5_hash[:8]}...")
+                self.upload_status.emit(f"✅ [{self.account_name}] MD5计算完成: {md5_hash[:8]}...")
                 
             except PermissionError:
-                self.upload_status.emit(f"❌ 文件权限错误，无法读取: {os.path.basename(file_path)}")
+                self.upload_status.emit(f"❌ [{self.account_name}] 文件权限错误，无法读取: {os.path.basename(file_path)}")
                 return False
             except IOError as e:
-                self.upload_status.emit(f"❌ 文件读取错误: {os.path.basename(file_path)} - {e}")
+                self.upload_status.emit(f"❌ [{self.account_name}] 文件读取错误: {os.path.basename(file_path)} - {e}")
                 return False
             except Exception as e:
-                self.upload_status.emit(f"❌ MD5计算异常: {os.path.basename(file_path)} - {e}")
+                self.upload_status.emit(f"❌ [{self.account_name}] MD5计算异常: {os.path.basename(file_path)} - {e}")
                 return False
         
             # 🔍 步骤3：数据库记录（增强错误处理和重试机制）
@@ -200,7 +200,7 @@ class BrowserUploadThread(QThread):
     def run(self):
         try:
             # 步骤1: 验证账号和浏览器
-            self.upload_status.emit("验证账号状态...")
+            self.upload_status.emit(f"[{self.account_name}] 验证账号状态...")
             self.upload_progress.emit(10)
             
             account = self.core_app.account_manager.get_account(self.account_name)
@@ -227,7 +227,7 @@ class BrowserUploadThread(QThread):
                 return
                 
             # 步骤2: 验证视频文件
-            self.upload_status.emit("验证视频文件...")
+            self.upload_status.emit(f"[{self.account_name}] 验证视频文件...")
             self.upload_progress.emit(20)
             
             video_path = os.path.join(self.video_directory, self.video_filename)
@@ -236,7 +236,7 @@ class BrowserUploadThread(QThread):
                 return
                 
             # 步骤3: 验证商品ID
-            self.upload_status.emit("验证商品信息...")
+            self.upload_status.emit(f"[{self.account_name}] 验证商品信息...")
             self.upload_progress.emit(30)
             
             # 使用商品管理器验证商品
@@ -262,14 +262,14 @@ class BrowserUploadThread(QThread):
                 self.upload_finished.emit(False, f"商品验证失败 (ID: {product_id})，可能商品不在B站联盟库中")
                 return
                 
-            self.upload_status.emit(f"商品验证成功: {product_info.get('goodsName', '未知商品')}")
+            self.upload_status.emit(f"[{self.account_name}] 商品验证成功: {product_info.get('goodsName', '未知商品')}")
             self.upload_progress.emit(40)
             
             if self.is_stopped:
                 return
                 
             # 步骤4: 启动浏览器并访问创作中心
-            self.upload_status.emit("启动浏览器...")
+            self.upload_status.emit(f"[{self.account_name}] 启动浏览器...")
             self.upload_progress.emit(50)
             
             # 获取浏览器实例
@@ -280,7 +280,7 @@ class BrowserUploadThread(QThread):
                 return
                 
             # 访问创作中心
-            self.upload_status.emit("访问B站创作中心...")
+            self.upload_status.emit(f"[{self.account_name}] 访问B站创作中心...")
             try:
                 driver.get("https://member.bilibili.com/platform/upload/video/frame")
                 time.sleep(UIConfig.PAGE_LOAD_DELAY)  # 给页面更多加载时间
@@ -295,13 +295,13 @@ class BrowserUploadThread(QThread):
                 return
                 
             # 步骤5: 使用独立上传器进行真实上传视频
-            self.upload_status.emit("开始真实上传视频文件...")
+            self.upload_status.emit(f"[{self.account_name}] 开始真实上传视频文件...")
             from core.bilibili_video_uploader import create_uploader
             uploader = create_uploader(self.upload_status.emit, self.core_app.config_manager)
             
             # 真实上传视频文件
             self.upload_status.emit(f"📤 [{self.account_name}] 上传视频文件...")
-            success = uploader.upload_video(driver, video_path)
+            success = uploader.upload_video(driver, video_path, self.account_name)
             if not success:
                 self.upload_finished.emit(False, "视频上传失败")
                 return
@@ -309,8 +309,8 @@ class BrowserUploadThread(QThread):
             self.upload_progress.emit(80)
             
             # 步骤6: 使用独立上传器填写视频信息
-            self.upload_status.emit("填写视频信息...")
-            success = uploader.fill_video_info(driver, self.video_filename, self.upload_settings, product_info)
+            self.upload_status.emit(f"[{self.account_name}] 填写视频信息...")
+            success = uploader.fill_video_info(driver, self.video_filename, self.upload_settings, product_info, self.account_name)
             if not success:
                 self.upload_finished.emit(False, "填写视频信息失败")
                 return
@@ -318,8 +318,8 @@ class BrowserUploadThread(QThread):
             self.upload_progress.emit(85)
             
             # 步骤7: 使用独立上传器添加商品
-            self.upload_status.emit("添加带货商品...")
-            success = uploader.add_product_to_video(driver, self.video_filename, product_info)
+            self.upload_status.emit(f"[{self.account_name}] 添加带货商品...")
+            success = uploader.add_product_to_video(driver, self.video_filename, product_info, self.account_name)
             if not success:
                 self.upload_finished.emit(False, "添加商品失败")
                 return
@@ -355,7 +355,7 @@ class BrowserUploadThread(QThread):
             uploader.success_callback = success_callback
             
             # 步骤8: 使用独立上传器发布视频（成功时会自动调用回调更新数据库和界面）
-            self.upload_status.emit("发布视频...")
+            self.upload_status.emit(f"[{self.account_name}] 发布视频...")
             success = uploader.publish_video(driver, self.account_name)
             
             # 🎯 重要：清除回调避免影响其他使用
@@ -660,469 +660,424 @@ class BatchUploadThread(QThread):
         self.is_stopped = True
     
     def run(self):
-        """执行批量上传 - 动态浏览器池管理"""
+        """批量上传主逻辑 - 安全并发版本"""
         try:
-            # 🎯 增强异常处理：捕获所有可能的异常，防止程序意外退出
-            from core.bilibili_product_manager import get_product_manager
-            from queue import Queue
-            import random
-            
-            product_manager = get_product_manager()
-            
-            self.upload_status.emit("🚀 开始批量上传流程...")
-            
-            # 🎯 添加内存监控（可选）
+            # 🎯 步骤0：内存监控
+            import psutil
+            initial_memory = 0
             try:
-                import psutil
                 process = psutil.Process()
-                initial_memory = process.memory_info().rss / 1024 / 1024  # MB
+                initial_memory = process.memory_info().rss / 1024 / 1024
                 self.upload_status.emit(f"📊 初始内存使用: {initial_memory:.1f}MB")
-            except ImportError:
-                # psutil不可用时的后备方案
-                initial_memory = 0
-                self.upload_status.emit("📊 内存监控不可用 (需要安装psutil)")
-            except Exception:
-                initial_memory = 0
+            except:
+                pass
             
-            # 获取所有未上传的视频文件
-            available_videos = []
-            self.upload_status.emit("🔍 正在快速扫描视频文件...")
-            
-            # 🎯 性能优化：批量检查上传状态，减少数据库查询
-            video_md5_cache = {}  # 缓存MD5值，避免重复计算
-            
-            for video_file in self.video_files:
-                filename = os.path.basename(video_file)
-                
-                # 🎯 优化：先检查文件是否存在，避免无效计算
-                if not os.path.exists(video_file):
-                    self.upload_status.emit(f"⏭️ 文件不存在跳过: {filename}")
-                    continue
-                
-                # 🎯 优化：使用缓存的MD5值或快速计算
-                try:
-                    # 快速检查：如果文件很小或已在缓存中，直接处理
-                    file_size = os.path.getsize(video_file)
-                    if file_size < 10 * 1024 * 1024:  # 小于10MB的文件快速处理
-                        is_uploaded = self.is_video_uploaded(video_file)
-                    else:
-                        # 大文件使用文件修改时间作为快速检查
-                        mtime = os.path.getmtime(video_file)
-                        cache_key = f"{video_file}_{mtime}_{file_size}"
-                        
-                        if cache_key in video_md5_cache:
-                            is_uploaded = video_md5_cache[cache_key]
-                        else:
-                            is_uploaded = self.is_video_uploaded(video_file)
-                            video_md5_cache[cache_key] = is_uploaded
-                
-                    if not is_uploaded:
-                        available_videos.append(video_file)
-                        self.upload_status.emit(f"📹 待上传: {filename}")
-                    else:
-                        self.upload_status.emit(f"⏭️ 已上传跳过: {filename}")
-                        
-                except Exception as e:
-                    # 如果检查失败，保守地认为未上传
-                    available_videos.append(video_file)
-                    self.upload_status.emit(f"⚠️ 检查失败，加入队列: {filename}")
-            
-            if not available_videos:
-                self.upload_finished.emit(False, "没有可上传的新视频")
-                return
-            
-            # 🎯 新功能：使用高级视频随机化策略
-            from performance.video_file_loader import VideoRandomizer
-            
-            # 从配置文件读取随机化策略
-            randomize_strategy = self.core_app.config_manager.load_config().get('ui_settings', {}).get('randomize_strategy', 'random')
-            
-            # 验证随机化策略配置
-            valid_strategies = ['random', 'group', 'partial', 'none']
-            if randomize_strategy not in valid_strategies:
-                self.upload_status.emit(f"⚠️ 无效的随机化策略 '{randomize_strategy}'，使用默认策略 'random'")
-                self.upload_status.emit(f"💡 可选策略: {', '.join(valid_strategies)}")
-                randomize_strategy = 'random'
-            
-            # 输出当前使用的策略
-            strategy_descriptions = {
-                'random': '完全随机 - 最大化随机性',
-                'group': '分组随机 - 每10个一组内部随机',
-                'partial': '部分随机 - 70%位置改变',
-                'none': '不随机 - 保持文件名顺序'
-            }
-            self.upload_status.emit(f"🎲 随机化策略: {randomize_strategy} ({strategy_descriptions.get(randomize_strategy, '未知')})")
-            
-            if randomize_strategy != 'none':
-                original_videos = available_videos.copy()
-                available_videos = VideoRandomizer.shuffle_videos(available_videos, randomize_strategy)
-                
-                # 输出随机化统计信息
-                stats_info = VideoRandomizer.get_randomization_info(original_videos, available_videos)
-                self.upload_status.emit(f"🔀 视频随机化完成: 策略={randomize_strategy}")
-                self.upload_status.emit(f"📊 {stats_info}")
-            else:
-                self.upload_status.emit(f"📋 保持原始文件顺序上传")
-            
-            self.upload_status.emit(f"📹 找到 {len(available_videos)} 个待上传视频")
-            
-            # 统计变量
-            total_videos = len(available_videos)
-            processed_videos = 0
-            successful_uploads = 0
-            deleted_videos = 0
-            
-            # 🎯 新增：预检查账号完成状态，过滤掉已完成的账号
-            # from core.account_manager import account_manager  # 删除这行
+            # 🎯 步骤1：验证账号并过滤已完成的账号
             valid_accounts = []
             completed_accounts = []
             
-            # 🎯 关键修复：清理所有缓存，确保使用最新数据库数据
-            self._clear_progress_cache()
-            if hasattr(self, 'account_service') and self.account_service:
-                self.account_service.clear_progress_cache()
-            self.upload_status.emit("🧹 已清理进度缓存，确保使用最新数据")
-            
-            self.upload_status.emit("🔍 检查账号完成状态...")
             for account in self.selected_accounts:
+                account_obj = self.core_app.account_manager.get_account(account)
+                if not account_obj:
+                    self.upload_status.emit(f"⚠️ 账号 {account} 无效，跳过")
+                    continue
+                
+                # 🔧 关键修复：检查账号投稿进度
                 try:
-                    # 🎯 关键修复：直接使用数据库查询，绕过缓存
                     from database.database_manager import db_manager
-                    status, completed, published = db_manager.get_account_progress(account, self.videos_per_account)
-                        
-                    if completed:
+                    status_text, is_completed, published_count = db_manager.get_account_progress(account, self.videos_per_account)
+                    
+                    if is_completed:
                         completed_accounts.append(account)
-                        self.upload_status.emit(f"⏭️ [{account}] 已完成目标 ({status})，跳过")
+                        self.upload_status.emit(f"✅ 账号 {account} 已完成目标 ({published_count}/{self.videos_per_account})，跳过")
+                        continue
+                    elif published_count >= self.videos_per_account:
+                        completed_accounts.append(account)
+                        self.upload_status.emit(f"✅ 账号 {account} 已超过目标 ({published_count}/{self.videos_per_account})，跳过")
+                        continue
                     else:
                         valid_accounts.append(account)
-                        self.upload_status.emit(f"📋 [{account}] 需要继续: {status}")
+                        self.upload_status.emit(f"📋 账号 {account} 需要继续上传 ({published_count}/{self.videos_per_account})")
+                        
                 except Exception as e:
-                    # 如果检查失败，仍然加入队列，让后续处理决定
+                    # 如果检查进度失败，默认认为需要上传
                     valid_accounts.append(account)
-                    self.upload_status.emit(f"⚠️ [{account}] 状态检查失败: {e}，将继续处理")
+                    self.upload_status.emit(f"⚠️ 账号 {account} 进度检查失败: {e}，默认加入上传队列")
+            
+            # 报告统计结果
+            if completed_accounts:
+                self.upload_status.emit(f"📊 已完成账号: {len(completed_accounts)} 个 ({', '.join(completed_accounts)})")
             
             if not valid_accounts:
-                self.upload_finished.emit(True, f"所有账号都已完成目标！已完成: {len(completed_accounts)} 个")
+                if completed_accounts:
+                    self.upload_finished.emit(True, f"所有账号都已完成目标！已完成: {len(completed_accounts)} 个账号")
+                else:
+                    self.upload_finished.emit(False, "没有有效的账号可以上传")
                 return
             
-            self.upload_status.emit(f"✅ 有效账号: {len(valid_accounts)} 个，已完成: {len(completed_accounts)} 个")
+            self.upload_status.emit(f"🚀 需要上传的账号: {len(valid_accounts)} 个 ({', '.join(valid_accounts)})")
             
-            # 🎯 修复：创建一次性视频队列，每个视频只能被上传一次
-            video_queue = Queue()
-            for video in available_videos:
-                video_queue.put(video)
-            
-            self.upload_status.emit(f"📹 视频队列已创建: {len(available_videos)} 个视频")
-            self.upload_status.emit(f"💡 一次性上传模式：每个视频只能被上传一次，成功后立即删除文件")
-            self.upload_status.emit(f"📊 预计总需求: {len(valid_accounts) * self.videos_per_account} 个视频，可用视频: {len(available_videos)} 个")
-            
-            if len(available_videos) < len(valid_accounts) * self.videos_per_account:
-                self.upload_status.emit(f"⚠️ 视频数量不足，部分账号可能无法达到目标数量")
-            
-            # 账号队列和浏览器池管理（只处理有效账号）
-            account_queue = Queue()
-            for account in valid_accounts:
-                account_queue.put(account)
-            
-            active_browsers = {}  # {account: browser}
-            # 使用简单的标志位避免复杂线程同步
-            browser_active_accounts = set()
-            
-            def process_single_account(account):
-                """处理单个账号的所有视频"""
-                nonlocal processed_videos, successful_uploads, deleted_videos
+            # 🔧 步骤1.5：清理缓存和锁，确保检查基于最新状态
+            try:
+                from performance.video_file_loader import get_global_md5_cache, get_global_upload_coordinator
                 
-                browser = None
+                md5_cache = get_global_md5_cache()
+                upload_coordinator = get_global_upload_coordinator()
+                
+                # 清理过期的MD5缓存和文件锁
+                md5_cache._cleanup_expired_cache()
+                upload_coordinator.clear_completed_locks()
+                
+                self.upload_status.emit("🧹 已清理缓存和锁，确保状态检查准确")
+            except Exception as e:
+                self.upload_status.emit(f"⚠️ 清理缓存失败: {e}")
+            
+            # 🎯 步骤2：准备视频文件
+            from core.bilibili_product_manager import get_product_manager
+            product_manager = get_product_manager()
+            
+            all_video_files = []
+            skipped_count = 0
+            for video_file in self.video_files:
+                video_path = os.path.join(self.video_dir, video_file)
+                if not os.path.exists(video_path):
+                    self.upload_status.emit(f"⚠️ 文件不存在，跳过: {video_file}")
+                    skipped_count += 1
+                elif self.is_video_uploaded(video_path):
+                    self.upload_status.emit(f"⏭️ 已上传，跳过: {video_file}")
+                    skipped_count += 1
+                else:
+                    all_video_files.append(video_path)
+            
+            if skipped_count > 0:
+                self.upload_status.emit(f"📊 初始过滤：跳过 {skipped_count} 个已处理视频，剩余 {len(all_video_files)} 个")
+            
+            if not all_video_files:
+                self.upload_finished.emit(False, "没有可上传的视频文件（所有视频都已处理）")
+                return
+            
+            # 🎯 步骤3：随机化视频列表并预估需求
+            import random
+            random.shuffle(all_video_files)
+            
+            # 🔧 关键修复：基于需要上传的账号计算视频需求，而不是总账号数
+            # 先预估每个账号的需求（实际分配时会更精确）
+            estimated_videos_needed = len(valid_accounts) * self.videos_per_account
+            available_videos = all_video_files[:estimated_videos_needed] if len(all_video_files) >= estimated_videos_needed else all_video_files
+            
+            self.upload_status.emit(f"📊 准备上传: {len(available_videos)} 个视频文件")
+            self.upload_status.emit(f"🎯 预估目标: 每个账号最多 {self.videos_per_account} 个视频，待处理账号 {len(valid_accounts)} 个")
+            self.upload_status.emit(f"🌐 并发浏览器数量: {self.concurrent_browsers}")
+            
+            # 🎯 步骤4：为每个账号预分配视频队列（关键：避免竞争且考虑现有进度）
+            account_video_queues = {}
+            video_index = 0
+            
+            self.upload_status.emit("📊 检查账号投稿进度...")
+            
+            for account in valid_accounts:
+                # 🔧 关键修复：检查账号当前投稿进度
                 try:
-                    # 🎯 修复：处理前再次检查账号完成状态（绕过缓存）
-                    try:
-                        # 🎯 关键修复：直接使用数据库查询，绕过缓存
-                        from database.database_manager import db_manager
-                        status, completed, published = db_manager.get_account_progress(account, self.videos_per_account)
-                            
-                        if completed:
-                            self.upload_status.emit(f"⏭️ [{account}] 处理前检查发现已完成目标 ({status})，跳过")
-                            return
+                    from database.database_manager import db_manager
+                    status_text, is_completed, published_count = db_manager.get_account_progress(account, self.videos_per_account)
+                    
+                    if is_completed:
+                        # 账号已完成目标，跳过分配
+                        account_video_queues[account] = []
+                        self.upload_status.emit(f"✅ [{account}] 已完成目标 ({published_count}/{self.videos_per_account})，跳过")
+                        continue
+                    
+                    # 计算还需要上传的数量
+                    remaining_needed = self.videos_per_account - published_count
+                    if remaining_needed <= 0:
+                        account_video_queues[account] = []
+                        self.upload_status.emit(f"✅ [{account}] 无需额外上传 ({published_count}/{self.videos_per_account})")
+                        continue
+                    
+                    # 为账号分配剩余需要的视频数量
+                    account_video_queues[account] = []
+                    for i in range(remaining_needed):
+                        if video_index < len(available_videos):
+                            account_video_queues[account].append(available_videos[video_index])
+                            video_index += 1
                         else:
-                            self.upload_status.emit(f"📋 [{account}] 开始处理，当前进度: {status}")
-                    except Exception as e:
-                        self.upload_status.emit(f"⚠️ [{account}] 状态检查失败: {e}，继续处理")
+                            break
                     
-                    # 启动浏览器
+                    self.upload_status.emit(f"📋 [{account}] 预分配 {len(account_video_queues[account])} 个视频 (已有:{published_count}, 目标:{self.videos_per_account})")
+                    
+                except Exception as e:
+                    # 如果检查进度失败，按原逻辑分配
+                    self.upload_status.emit(f"⚠️ [{account}] 进度检查失败: {e}，按原逻辑分配")
+                    account_video_queues[account] = []
+                    for i in range(self.videos_per_account):
+                        if video_index < len(available_videos):
+                            account_video_queues[account].append(available_videos[video_index])
+                            video_index += 1
+                        else:
+                            break
+                    
+                    self.upload_status.emit(f"📋 [{account}] 预分配 {len(account_video_queues[account])} 个视频 (未检查进度)")
+            
+            # 🔧 检查是否有账号需要执行任务
+            accounts_with_tasks = [account for account, videos in account_video_queues.items() if videos]
+            if not accounts_with_tasks:
+                self.upload_status.emit("✅ 所有账号都已完成目标或无需上传，批量上传结束")
+                self.upload_finished.emit(True, "所有账号都已完成目标！")
+                return
+            
+            self.upload_status.emit(f"🎯 实际需要执行的账号: {len(accounts_with_tasks)} 个 ({', '.join(accounts_with_tasks)})")
+            
+            # 🎯 步骤5：并发执行账号任务
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            import threading
+            
+            # 线程安全的进度计数器
+            progress_lock = threading.Lock()
+            total_processed = 0
+            total_successful = 0
+            
+            def process_account(account):
+                """处理单个账号的上传任务"""
+                nonlocal total_processed, total_successful
+                
+                try:
+                    self.upload_status.emit(f"🎯 [{account}] 开始并发任务")
+                    
+                    # 启动账号的浏览器
                     account_obj = self.core_app.account_manager.get_account(account)
-                    if not account_obj:
-                        self.upload_status.emit(f"❌ 账号 {account} 不存在，跳过")
-                        return
-                    
                     browser = self.ensure_browser_ready(account, account_obj)
                     if not browser:
-                        self.upload_status.emit(f"❌ 账号 {account} 浏览器启动失败，跳过")
-                        # 🎯 浏览器启动失败时发送状态变化信号
-                        self.browser_status_changed.emit(account, False)
-                        return
+                        self.upload_status.emit(f"❌ [{account}] 浏览器启动失败，跳过")
+                        return 0, 0
                     
-                    # 加入活跃浏览器池
-                    active_browsers[account] = browser
-                    browser_active_accounts.add(account)
-                    self.upload_status.emit(f"✅ 账号 {account} 浏览器就绪 (当前活跃: {len(active_browsers)}/{self.concurrent_browsers})")
-                    
-                    # 通知主界面刷新状态
+                    self.upload_status.emit(f"✅ [{account}] 浏览器就绪，开始上传")
                     self.browser_status_changed.emit(account, True)
                     
-                    uploaded_count = 0
+                    account_uploaded = 0
+                    account_processed = 0
+                    account_videos = account_video_queues.get(account, [])
                     
-                    # 🎯 修复：允许每个账号上传多个视频（用户需求：30个视频循环上传）
-                    videos_processed_by_account = 0
-                    consecutive_empty_queue_count = 0  # 🎯 新增：连续空队列计数
-                    max_empty_queue_retries = 10  # 🎯 最多重试10次（避免无限等待）
-                    
-                    # 🎯 修复：添加明确的成功上传计数检查，避免因商品验证失败提前退出
-                    while uploaded_count < self.videos_per_account:
-                        # 🎯 关键修复：检查是否已达到目标上传数量
-                        if uploaded_count >= self.videos_per_account:
-                            self.upload_status.emit(f"🎉 [{account}] 已成功上传 {uploaded_count}/{self.videos_per_account} 个视频，完成任务")
+                    # 处理分配给这个账号的视频
+                    for video_path in account_videos:
+                        if self.is_stopped:
                             break
                         
-                        # 从队列获取视频
-                        try:
-                            video_path = video_queue.get_nowait()
-                            consecutive_empty_queue_count = 0  # 重置计数器
-                        except:
-                            # 队列为空，但不立即退出
-                            consecutive_empty_queue_count += 1
-                            
-                            # 🎯 队列为空时的处理策略
-                            if consecutive_empty_queue_count <= max_empty_queue_retries:
-                                self.upload_status.emit(f"⏳ [{account}] 视频队列暂时为空，等待其他账号释放视频 (尝试 {consecutive_empty_queue_count}/{max_empty_queue_retries})")
-                                time.sleep(2)  # 等待2秒后重试
-                                continue
-                            else:
-                                self.upload_status.emit(f"⚠️ [{account}] 视频队列持续为空，但只成功上传了 {uploaded_count}/{self.videos_per_account} 个视频")
-                                break
-                        
-                        if not video_path:
-                            continue
-                        
                         filename = os.path.basename(video_path)
-                        processed_videos += 1
-                        videos_processed_by_account += 1
+                        account_processed += 1
                         
-                        self.upload_status.emit(f"📹 [{account}] 第{videos_processed_by_account}个视频: {filename} ({processed_videos}/{total_videos})")
+                        self.upload_status.emit(f"📹 [{account}] 第{account_processed}个视频: {filename}")
                         
-                        # 实时验证商品
-                        product_id = product_manager.extract_product_id_from_filename(filename)
-                        if not product_id:
-                            self.upload_status.emit(f"❌ [{account}] {filename} 无商品ID，删除继续下一个")
-                            if self.delete_video_file(video_path):
-                                deleted_videos += 1
-                            continue  # 🎯 继续尝试下一个视频
-                        
-                        # 验证商品是否在B站联盟库中
-                        cookies = product_manager.get_cookies_from_account(account_obj)
-                        if not cookies:
-                            self.upload_status.emit(f"❌ [{account}] 无法获取Cookie，跳过此视频")
-                            continue  # 🎯 继续尝试下一个视频
-                        
-                        jd_url = product_manager.build_jd_url(product_id)
-                        success, product_info = product_manager.distinguish_product(jd_url, cookies)
-                        
-                        if not success or not product_info:
-                            self.upload_status.emit(f"❌ [{account}] 商品{product_id}不在库中，删除{filename}继续下一个")
-                            if self.delete_video_file(video_path):
-                                deleted_videos += 1
-                            continue  # 🎯 关键修复：继续尝试下一个视频
-                        
-                        # 商品验证通过，开始上传
-                        self.upload_status.emit(f"🚀 [{account}] 上传第{videos_processed_by_account}个视频: {filename}")
-                        
-                        # 🎯 使用安全的上传协调器替换原有逻辑
-                        from performance.video_file_loader import get_global_upload_coordinator
-                        coordinator = get_global_upload_coordinator()
-                        
-                        upload_success, upload_message = coordinator.safe_upload_video(
-                            video_path, account, self.shared_uploader, browser, product_info, self
-                        )
-                        
-                        if upload_success:
-                            successful_uploads += 1
-                            uploaded_count += 1  # 🎯 关键修复：只有真正成功上传才增加计数
-                            deleted_videos += 1  # 协调器内部已处理删除
-                            self.upload_status.emit(f"✅ [{account}] 第{uploaded_count}个成功: {upload_message} (总进度: {uploaded_count}/{self.videos_per_account})")
-                            
-                            # 🎯 简化：直接检查本地计数器而不依赖数据库
-                            if uploaded_count >= self.videos_per_account:
-                                self.upload_status.emit(f"🎉 [{account}] 已完成当日目标 ({uploaded_count}/{self.videos_per_account})，停止继续上传")
-                                break  # 🎯 达到目标，退出该账号的上传循环
-                            else:
-                                self.upload_status.emit(f"📊 [{account}] 当前进度: {uploaded_count}/{self.videos_per_account} 进行中")
-                        else:
-                            self.upload_status.emit(f"⚠️ [{account}] 第{videos_processed_by_account}个视频失败: {upload_message}，继续下一个")
-                        
-                        # 更新进度
-                        progress = int((processed_videos / total_videos) * 100)
-                        self.upload_progress.emit(progress)
-                        
-                        # 🎯 每个视频完成后短暂休息，让界面更新
-                        time.sleep(1)
-                        
-                        # 🎯 每5个视频后重新导航到上传页面，保持浏览器状态
-                        if videos_processed_by_account % 5 == 0:
-                            try:
-                                self.upload_status.emit(f"🔄 [{account}] 第{videos_processed_by_account}个视频完成，刷新浏览器状态...")
-                                browser.get("https://member.bilibili.com/platform/upload/video/frame")
-                                time.sleep(2)
-                            except Exception as refresh_error:
-                                self.upload_status.emit(f"⚠️ [{account}] 刷新浏览器失败: {refresh_error}")
-                        
-                        # 🎯 循环继续，直到成功上传达到目标或队列为空
-                    
-                    self.upload_status.emit(f"🏁 [{account}] 完成上传 {uploaded_count} 个视频")
-                    
-                finally:
-                    # 🎯 优化：关闭浏览器并释放端口
-                    if browser:
                         try:
-                            if account in active_browsers:
-                                del active_browsers[account]
-                            browser_active_accounts.discard(account)
-                            self.upload_status.emit(f"🔒 关闭账号 {account} 的浏览器 (当前活跃: {len(active_browsers)}/{self.concurrent_browsers})")
+                            # 🔧 关键修复1：动态检查账号是否已达到目标数量
+                            try:
+                                from database.database_manager import db_manager
+                                _, is_completed, current_count = db_manager.get_account_progress(account, self.videos_per_account)
+                                if is_completed:
+                                    self.upload_status.emit(f"🎉 [{account}] 已达到目标数量 ({current_count}/{self.videos_per_account})，停止上传")
+                                    break
+                                elif current_count >= self.videos_per_account:
+                                    self.upload_status.emit(f"🎉 [{account}] 已超过目标数量 ({current_count}/{self.videos_per_account})，停止上传")
+                                    break
+                            except Exception as check_error:
+                                self.upload_status.emit(f"⚠️ [{account}] 动态进度检查失败: {check_error}")
                             
-                            # 使用BrowserManager的方法来正确关闭浏览器并释放端口
-                            self.core_app.browser_manager.close_driver(browser, account)
+                            # 🔧 关键修复2：动态检查视频是否已被其他账号上传
+                            if self.is_video_uploaded(video_path):
+                                self.upload_status.emit(f"⏭️ [{account}] 视频 {filename} 已被其他账号上传，跳过")
+                                with progress_lock:
+                                    total_processed += 1
+                                continue
                             
-                            # 清除账号对象中的浏览器实例引用
-                            account_obj = self.core_app.account_manager.get_account(account)
-                            if account_obj:
-                                account_obj.browser_instance = None
+                            # 验证商品ID
+                            product_id = product_manager.extract_product_id_from_filename(filename)
+                            if not product_id:
+                                self.upload_status.emit(f"❌ [{account}] {filename} 无商品ID，删除继续")
+                                if self.delete_video_file(video_path):
+                                    with progress_lock:
+                                        total_processed += 1
+                                continue
                             
-                            # 通知主界面刷新状态
-                            self.browser_status_changed.emit(account, False)
+                            # 验证商品信息
+                            cookies = product_manager.get_cookies_from_account(account_obj)
+                            if not cookies:
+                                self.upload_status.emit(f"❌ [{account}] 无法获取Cookie，跳过")
+                                continue
+                            
+                            jd_url = product_manager.build_jd_url(product_id)
+                            success, product_info = product_manager.distinguish_product(jd_url, cookies)
+                            
+                            if not success or not product_info:
+                                self.upload_status.emit(f"❌ [{account}] 商品{product_id}不在库中，删除{filename}")
+                                if self.delete_video_file(video_path):
+                                    with progress_lock:
+                                        total_processed += 1
+                                continue
+                            
+                            # 🎯 执行上传（使用协调器确保原子性）
+                            self.upload_status.emit(f"🚀 [{account}] 开始上传: {filename}")
+                            
+                            from performance.video_file_loader import get_global_upload_coordinator
+                            coordinator = get_global_upload_coordinator()
+                            
+                            upload_success, upload_message = coordinator.safe_upload_video(
+                                video_path, account, self.shared_uploader, browser, product_info, self
+                            )
+                            
+                            if upload_success:
+                                account_uploaded += 1
+                                with progress_lock:
+                                    total_successful += 1
+                                    total_processed += 1
                                 
+                                self.upload_status.emit(f"✅ [{account}] 第{account_uploaded}个成功: {upload_message}")
+                                self.upload_status.emit(f"📊 [{account}] 进度: {account_uploaded}/{len(account_videos)}")
+                                
+                                # 投稿成功后的延时
+                                if account_uploaded < len(account_videos):
+                                    try:
+                                        config = self.core_app.config_manager.load_config()
+                                        wait_time = config.get('ui_settings', {}).get('success_wait_time', 2)
+                                        wait_time = max(1, min(999, int(wait_time)))
+                                        
+                                        self.upload_status.emit(f"⏳ [{account}] 投稿成功，等待 {wait_time} 秒后继续...")
+                                        for i in range(wait_time):
+                                            if self.is_stopped:
+                                                break
+                                            time.sleep(1)
+                                    except:
+                                        time.sleep(2)
+                            else:
+                                self.upload_status.emit(f"⚠️ [{account}] 上传失败: {upload_message}")
+                                with progress_lock:
+                                    total_processed += 1
+                            
+                            # 定期刷新浏览器
+                            refresh_interval = self.core_app.config_manager.load_config().get('ui_settings', {}).get('browser_refresh_interval', 5)
+                            if account_processed % refresh_interval == 0:
+                                try:
+                                    self.upload_status.emit(f"🔄 [{account}] 刷新浏览器状态...")
+                                    browser.get("https://member.bilibili.com/platform/upload/video/frame")
+                                    time.sleep(2)
+                                except Exception as refresh_error:
+                                    self.upload_status.emit(f"⚠️ [{account}] 刷新浏览器失败: {refresh_error}")
+                            
+                            # 更新总体进度
+                            with progress_lock:
+                                progress = int((total_processed / len(available_videos)) * 100)
+                                self.upload_progress.emit(progress)
+                        
                         except Exception as e:
-                            self.upload_status.emit(f"⚠️ 关闭浏览器失败: {account} - {e}")
-            
-            # 使用统一的线程管理器
-            
-            # 创建结果队列来接收完成的任务
-            from queue import Queue
-            completion_queue = Queue()
-            
-            def account_wrapper(account):
-                """包装函数，处理完成后通知"""
-                try:
-                    process_single_account(account)
-                    completion_queue.put(('completed', account, None))
-                except Exception as e:
-                    completion_queue.put(('error', account, str(e)))
-            
-            from concurrent.futures import ThreadPoolExecutor
-            with ThreadPoolExecutor(max_workers=self.concurrent_browsers) as executor:
-                active_futures = {}  # {account: future}
-                
-                # 启动初始的浏览器（使用有效账号数量）
-                for _ in range(min(self.concurrent_browsers, len(valid_accounts))):
-                    if account_queue.empty():
-                        break
-                    account = account_queue.get()
-                    future = executor.submit(account_wrapper, account)
-                    active_futures[account] = future
-                    self.upload_status.emit(f"🚀 启动账号: {account} (活跃: {len(active_futures)}/{self.concurrent_browsers})")
-                
-                # 监控完成状态并动态添加新任务
-                while active_futures or not account_queue.empty():
-                    if self.is_stopped:
-                        break
+                            self.upload_status.emit(f"❌ [{account}] 处理视频 {filename} 时异常: {e}")
+                            with progress_lock:
+                                total_processed += 1
+                            continue
                     
+                    # 🔧 智能任务完成判断 - 包含最终进度验证
                     try:
-                        # 等待任务完成
-                        status, completed_account, error = completion_queue.get(timeout=1)
+                        from database.database_manager import db_manager
+                        _, final_is_completed, final_count = db_manager.get_account_progress(account, self.videos_per_account)
                         
-                        # 移除已完成的任务
-                        if completed_account in active_futures:
-                            del active_futures[completed_account]
-                        
-                        if status == 'completed':
-                            self.upload_status.emit(f"✅ 账号 {completed_account} 处理完成")
+                        if final_is_completed or final_count >= self.videos_per_account:
+                            self.upload_status.emit(f"🎉 [{account}] 目标达成！数据库显示: {final_count}/{self.videos_per_account}")
+                        elif account_uploaded >= self.videos_per_account:
+                            self.upload_status.emit(f"🎉 [{account}] 本轮目标达成！本轮上传: {account_uploaded}/{self.videos_per_account}")
+                        elif account_processed >= len(account_videos):
+                            self.upload_status.emit(f"🏁 [{account}] 队列完成！本轮成功: {account_uploaded}/{len(account_videos)}（目标:{self.videos_per_account}，总计:{final_count}）")
                         else:
-                            self.upload_status.emit(f"❌ 账号 {completed_account} 处理失败: {error}")
-                        
-                        # 如果还有账号需要处理，启动新的浏览器
-                        if not account_queue.empty():
-                            account = account_queue.get()
-                            future = executor.submit(account_wrapper, account)
-                            active_futures[account] = future
-                            self.upload_status.emit(f"🔄 启动下一个账号: {account} (活跃: {len(active_futures)}/{self.concurrent_browsers})")
+                            self.upload_status.emit(f"🛑 [{account}] 任务中断！本轮成功: {account_uploaded}/{len(account_videos)}（总计:{final_count}）")
+                    except Exception as final_check_error:
+                        # 后备判断逻辑
+                        if account_uploaded >= self.videos_per_account:
+                            self.upload_status.emit(f"🎉 [{account}] 目标达成！成功上传: {account_uploaded}/{self.videos_per_account}")
+                        elif account_processed >= len(account_videos):
+                            self.upload_status.emit(f"🏁 [{account}] 队列完成！成功上传: {account_uploaded}/{len(account_videos)}（目标:{self.videos_per_account}）")
+                        else:
+                            self.upload_status.emit(f"🛑 [{account}] 任务中断！成功上传: {account_uploaded}/{len(account_videos)}")
                     
-                    except Exception:  # Queue.Empty异常
-                        # 超时，继续等待
-                        continue
+                    # 关闭浏览器
+                    try:
+                        self.core_app.browser_manager.close_driver(browser, account)
+                        account_obj.browser_instance = None
+                        self.browser_status_changed.emit(account, False)
+                        self.upload_status.emit(f"🔒 [{account}] 浏览器已关闭")
+                    except Exception as e:
+                        self.upload_status.emit(f"⚠️ [{account}] 关闭浏览器失败: {e}")
+                    
+                    return account_processed, account_uploaded
+                
+                except Exception as e:
+                    self.upload_status.emit(f"❌ [{account}] 账号处理异常: {e}")
+                    # 确保浏览器关闭
+                    try:
+                        if 'browser' in locals() and browser:
+                            self.core_app.browser_manager.close_driver(browser, account)
+                            account_obj.browser_instance = None
+                            self.browser_status_changed.emit(account, False)
+                    except:
+                        pass
+                    return 0, 0
             
-            # 🎯 输出内存使用情况
+            # 🎯 使用ThreadPoolExecutor进行并发执行
+            self.upload_status.emit(f"🚀 开始 {self.concurrent_browsers} 个并发任务...")
+            self.upload_status.emit(f"🔍 调试信息: 有效账号={len(valid_accounts)}, 并发数={self.concurrent_browsers}, 实际并发数={min(len(valid_accounts), self.concurrent_browsers)}")
+            
+            with ThreadPoolExecutor(max_workers=self.concurrent_browsers, thread_name_prefix="BatchUpload") as executor:
+                # 提交所有账号任务
+                future_to_account = {executor.submit(process_account, account): account for account in valid_accounts}
+                
+                # 等待所有任务完成
+                for future in as_completed(future_to_account):
+                    account = future_to_account[future]
+                    try:
+                        processed, uploaded = future.result()
+                        self.upload_status.emit(f"📋 [{account}] 任务完成统计: 处理{processed}个，成功{uploaded}个")
+                    except Exception as e:
+                        self.upload_status.emit(f"❌ [{account}] 任务执行异常: {e}")
+            
+            # 🎯 输出最终统计
             try:
-                if 'process' in locals() and initial_memory > 0:
-                    final_memory = process.memory_info().rss / 1024 / 1024  # MB
+                if initial_memory > 0:
+                    final_memory = process.memory_info().rss / 1024 / 1024
                     memory_used = final_memory - initial_memory
                     self.upload_status.emit(f"📊 最终内存使用: {final_memory:.1f}MB (增加: {memory_used:+.1f}MB)")
             except:
                 pass
             
-            # 输出最终结果
-            message = f"批量上传完成: 处理 {processed_videos} 个视频, 成功 {successful_uploads} 个, 删除 {deleted_videos} 个"
+            message = f"✅ 并发批量上传完成！总处理 {total_processed} 个视频，成功 {total_successful} 个"
             self.upload_finished.emit(True, message)
             
-        except MemoryError as e:
-            # 🎯 内存不足的特殊处理
-            error_msg = f"❌ 内存不足，批量上传中止: {str(e)}"
-            self.upload_status.emit(error_msg)
-            self.upload_finished.emit(False, error_msg)
-            
-        except KeyboardInterrupt:
-            # 🎯 用户中断的处理
-            self.upload_status.emit("⏹️ 用户中断批量上传")
-            self.upload_finished.emit(False, "用户中断上传")
-            
         except Exception as e:
-            # 🎯 增强异常处理：记录详细错误信息，防止程序崩溃
             import traceback
-            error_msg = f"批量上传异常: {str(e)}"
+            error_msg = f"并发批量上传异常: {str(e)}"
             detailed_error = f"异常详情:\n{traceback.format_exc()}"
             
             self.upload_status.emit(f"❌ {error_msg}")
             self.upload_status.emit(f"🔍 {detailed_error}")
             self.upload_finished.emit(False, error_msg)
-            
-            # 🎯 记录内存状态（如果可能）
-            try:
-                if 'process' in locals() and initial_memory > 0:
-                    current_memory = process.memory_info().rss / 1024 / 1024
-                    self.upload_status.emit(f"📊 异常时内存使用: {current_memory:.1f}MB")
-            except:
-                pass
                 
         finally:
-            # 🎯 确保线程退出时的清理工作
+            # 🎯 确保清理所有浏览器实例
             try:
-                self.upload_status.emit("🧹 正在清理批量上传资源...")
+                self.upload_status.emit("🧹 正在清理并发上传资源...")
                 
-                # 清理浏览器实例
-                if 'active_browsers' in locals():
-                    for account, browser in active_browsers.items():
-                        try:
-                            browser.quit()
-                            self.upload_status.emit(f"🔒 已关闭 {account} 的浏览器")
-                        except:
-                            pass
+                # 清理所有可能的浏览器实例
+                for account in self.selected_accounts:
+                    try:
+                        account_obj = self.core_app.account_manager.get_account(account)
+                        if account_obj and hasattr(account_obj, 'browser_instance') and account_obj.browser_instance:
+                            self.core_app.browser_manager.close_driver(account_obj.browser_instance, account)
+                            account_obj.browser_instance = None
+                            self.browser_status_changed.emit(account, False)
+                            self.upload_status.emit(f"🔒 清理时关闭 {account} 的浏览器")
+                    except:
+                        pass
                 
-                # 触发垃圾回收
                 import gc
                 gc.collect()
-                
-                self.upload_status.emit("✅ 批量上传资源清理完成")
+                self.upload_status.emit("✅ 并发批量上传资源清理完成")
                 
             except Exception as cleanup_error:
                 self.upload_status.emit(f"⚠️ 清理资源时出错: {cleanup_error}")
-    
-    # perform_actual_upload方法已被VideoUploadCoordinator.safe_upload_video替代
 
     def ensure_browser_ready(self, account_name, account_obj):
         """确保浏览器就绪 - 修复版：正确的初始化流程"""

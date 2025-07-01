@@ -23,12 +23,74 @@ class BilibiliVideoUploader:
         self.dialog_handled = False
         self.wait_manager = SmartWaitManager()
         self.success_callback = None  # 🎯 新增：投稿成功回调
+        self.account_name = "unknown"  # 🎯 新增：当前账号名称，用于日志追踪
     
     def emit_status(self, message):
-        """发送状态消息"""
+        """发送状态消息 - 智能账号标识版本"""
+        # 🔧 智能添加账号标识：如果消息中没有账号信息，则添加当前账号名
+        if hasattr(self, 'account_name') and self.account_name and self.account_name != "unknown":
+            # 检查消息是否已经包含账号标识 (如 [账号名] 格式)
+            if not message.startswith('[') or '] ' not in message[:20]:
+                # 消息中没有账号标识，添加当前账号名
+                display_message = f"[{self.account_name}] {message}"
+            else:
+                # 消息中已有账号标识，直接使用
+                display_message = message
+        else:
+            # 没有账号信息或为unknown，使用通用前缀
+            display_message = f"[上传器] {message}"
+        
+        # 发送显示消息
         if self.status_callback:
-            self.status_callback(message)
-        print(f"[上传器] {message}")
+            self.status_callback(display_message)
+        print(display_message)
+    
+    def update_browser_identity(self, driver, account_name, status_text="正在操作"):
+        """更新浏览器标识信息 - 并发安全版本"""
+        if not account_name:
+            return
+            
+        try:
+            # 更新标题栏
+            original_title = driver.title or "哔哩哔哩"
+            # 移除可能已有的账号标识
+            if "] - " in original_title:
+                original_title = original_title.split("] - ", 1)[1]
+            new_title = f"[{account_name}] - {original_title}"
+            driver.execute_script(f"document.title = '{new_title}';")
+            
+            # 更新页面标识
+            update_badge_script = f"""
+            var badge = document.getElementById('account-badge');
+            if (badge) {{
+                badge.textContent = '🤖 {account_name} - {status_text}';
+                badge.style.opacity = '0.9';
+                // 添加闪烁效果表示活跃状态
+                badge.style.animation = 'none';
+                setTimeout(function() {{
+                    badge.style.animation = 'pulse 2s infinite';
+                }}, 10);
+            }}
+            
+            // 添加CSS动画（如果还没有）
+            if (!document.getElementById('badge-animation-style')) {{
+                var style = document.createElement('style');
+                style.id = 'badge-animation-style';
+                style.textContent = `
+                    @keyframes pulse {{
+                        0% {{ opacity: 0.9; }}
+                        50% {{ opacity: 0.6; }}
+                        100% {{ opacity: 0.9; }}
+                    }}
+                `;
+                document.head.appendChild(style);
+            }}
+            """
+            driver.execute_script(update_badge_script)
+            
+        except Exception as e:
+            # 静默失败，不影响主流程
+            pass
 
     def smart_wait_for_element(self, driver, selector, timeout=10, condition="clickable"):
         """智能等待元素 - 优化版本"""
@@ -77,12 +139,80 @@ class BilibiliVideoUploader:
             # 🎯 位置1：开始计时
             self.start_time = time.time()
             self.video_path = video_path
+            self.account_name = account_name  # 🎯 设置当前账号名称
             self.emit_status(f"🚀 开始投稿 (3分钟超时): {os.path.basename(video_path)}")
+            
+            # 🎯 新增：在浏览器标题栏显示账号信息
+            try:
+                original_title = driver.title or "哔哩哔哩"
+                new_title = f"[{account_name}] - {original_title}"
+                driver.execute_script(f"document.title = '{new_title}';")
+                self.emit_status(f"✅ 已在浏览器标题栏显示账号信息")
+            except Exception as e:
+                self.emit_status(f"⚠️ 设置浏览器标题失败: {e}")
+            
+            # 🎯 新增：在页面添加悬浮账号标识
+            try:
+                account_badge_script = f"""
+                // 移除可能存在的旧标识
+                var oldBadge = document.getElementById('account-badge');
+                if (oldBadge) oldBadge.remove();
+                
+                // 创建新的账号标识
+                var badge = document.createElement('div');
+                badge.id = 'account-badge';
+                badge.textContent = '🤖 {account_name}';
+                badge.style.cssText = `
+                    position: fixed;
+                    top: 10px;
+                    right: 10px;
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    color: white;
+                    padding: 8px 16px;
+                    border-radius: 20px;
+                    font-size: 14px;
+                    font-weight: bold;
+                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+                    z-index: 999999;
+                    backdrop-filter: blur(10px);
+                    border: 1px solid rgba(255,255,255,0.2);
+                    cursor: default;
+                    user-select: none;
+                    transition: all 0.3s ease;
+                `;
+                
+                // 添加悬停效果
+                badge.onmouseenter = function() {{
+                    this.style.transform = 'scale(1.05)';
+                    this.style.boxShadow = '0 6px 20px rgba(0,0,0,0.25)';
+                }};
+                badge.onmouseleave = function() {{
+                    this.style.transform = 'scale(1)';
+                    this.style.boxShadow = '0 4px 12px rgba(0,0,0,0.15)';
+                }};
+                
+                // 添加到页面
+                document.body.appendChild(badge);
+                
+                // 3秒后淡出
+                setTimeout(function() {{
+                    badge.style.opacity = '0.7';
+                }}, 3000);
+                """
+                
+                driver.execute_script(account_badge_script)
+                self.emit_status(f"✅ 已在页面添加悬浮账号标识")
+            except Exception as e:
+                self.emit_status(f"⚠️ 添加页面标识失败: {e}")
             
             # 🎯 关键修复：先导航到视频上传页面
             self.emit_status("导航到视频上传页面...")
             upload_url = "https://member.bilibili.com/platform/upload/video/frame"
             driver.get(upload_url)
+            
+            # 🎯 导航后更新浏览器标识
+            self.update_browser_identity(driver, account_name, "导航到上传页面")
             
             self.emit_status("⏳ 立即开始检测上传按钮...")
             
@@ -298,9 +428,12 @@ class BilibiliVideoUploader:
             if upload_complete:
                 self.emit_status("视频上传完成!")
                 
+                # 🎯 更新浏览器状态
+                self.update_browser_identity(driver, account_name, "上传完成")
+                
                 # 🎯 上传完成后处理弹窗 - 根据账号和浏览器状态决定
                 if need_popup_handling:
-                    self.emit_status(f"🎯 [{account_name}] 首次上传，处理弹窗...")
+                    self.emit_status(f"🎯 首次上传，处理弹窗...")
                     self._handle_popup_dialogs(driver)
                     
                     # 🎯 快速检测第二个弹窗（缩短检测时间）
@@ -332,9 +465,9 @@ class BilibiliVideoUploader:
                     else:
                         self.emit_status("ℹ️ 未检测到第二个弹窗，跳过处理")
                     
-                    self.emit_status(f"✅ [{account_name}] 首次上传弹窗处理完成，该浏览器后续上传将跳过弹窗检测")
+                    self.emit_status(f"✅ 首次上传弹窗处理完成，该浏览器后续上传将跳过弹窗检测")
                 else:
-                    self.emit_status(f"ℹ️ [{account_name}] 非首次上传，跳过弹窗检测")
+                    self.emit_status(f"ℹ️ 非首次上传，跳过弹窗检测")
                 
                 return True
             else:
@@ -346,10 +479,16 @@ class BilibiliVideoUploader:
             print(f"视频上传失败: {e}")
             return False
 
-    def fill_video_info(self, driver, video_filename, upload_settings, product_info):
+    def fill_video_info(self, driver, video_filename, upload_settings, product_info, account_name="unknown"):
         """填写视频信息 - 优化版本"""
         try:
-            self.emit_status("等待视频信息编辑页面...")
+            # 🔧 设置当前账号名，确保日志正确显示
+            self.account_name = account_name
+            
+            self.emit_status(f"等待视频信息编辑页面...")
+            
+            # 🎯 更新浏览器状态
+            self.update_browser_identity(driver, account_name, "填写视频信息")
             
             # 🎯 修复：更全面的标题输入框选择器
             title_input = None
@@ -631,10 +770,13 @@ class BilibiliVideoUploader:
             print(f"填写视频信息失败: {e}")
             return False
 
-    def add_product_to_video(self, driver, video_filename, product_info):
+    def add_product_to_video(self, driver, video_filename, product_info, account_name="unknown"):
         """通过链接选品方式添加商品 - 优化版本"""
         try:
-            self.emit_status("开始商品添加流程...")
+            # 🔧 设置当前账号名，确保日志正确显示
+            self.account_name = account_name
+            
+            self.emit_status(f"开始商品添加流程...")
             # 使用智能等待
             self.wait_manager.smart_sleep(1)
             
@@ -1361,10 +1503,15 @@ class BilibiliVideoUploader:
             print(f"添加商品失败: {e}")
             return False
 
-    def publish_video(self, driver, account_name="unknown"):
+    def publish_video(self, driver, account_name="unknown", success_callback_override=None):
         """发布视频 - 优化版本，增加智能滚动确保按钮可见，并检测投稿成功状态"""
         try:
+            # 🔧 设置当前账号名，确保日志正确显示
+            self.account_name = account_name
             self.emit_status("准备发布视频，确保页面完整显示...")
+            
+            # 🎯 更新浏览器状态
+            self.update_browser_identity(driver, account_name, "准备发布")
             
             # 🎯 关键修复：先滚动到页面底部，确保发布按钮可见
             try:
@@ -1538,7 +1685,7 @@ class BilibiliVideoUploader:
                             for button_element in button_elements:
                                 if button_element and button_element.is_displayed() and "再投一个" in button_element.text:
                                     success_detected = True
-                                    self.emit_status("🎉 检测到投稿成功：再投一个按钮 (CSS选择器)")
+                                    self.emit_status(f"🎉 检测到投稿成功：再投一个按钮 (CSS选择器)")
                                     break
                         except:
                             pass
@@ -1553,7 +1700,7 @@ class BilibiliVideoUploader:
                                         parent_button = span_element.find_element(By.XPATH, "./..")
                                         if parent_button.tag_name.lower() == 'button':
                                             success_detected = True
-                                            self.emit_status("🎉 检测到投稿成功：再投一个按钮 (XPath选择器)")
+                                            self.emit_status(f"🎉 检测到投稿成功：再投一个按钮 (XPath选择器)")
                                             break
                             except:
                                 pass
@@ -1565,7 +1712,7 @@ class BilibiliVideoUploader:
                                 for button_element in button_elements:
                                     if button_element and button_element.is_displayed():
                                         success_detected = True
-                                        self.emit_status("🎉 检测到投稿成功：再投一个按钮 (后备选择器)")
+                                        self.emit_status(f"🎉 检测到投稿成功：再投一个按钮 (后备选择器)")
                                         break
                             except:
                                 pass
@@ -1582,7 +1729,7 @@ class BilibiliVideoUploader:
                                         parent_button = span_element.find_element(By.XPATH, "./..")
                                         if parent_button.tag_name.lower() == 'button':
                                             success_detected = True
-                                            self.emit_status("🎉 检测到投稿成功：查看稿件按钮")
+                                            self.emit_status(f"🎉 检测到投稿成功：查看稿件按钮")
                                             break
                                     except:
                                         continue
@@ -1596,7 +1743,7 @@ class BilibiliVideoUploader:
                                 for button_element in button_elements:
                                     if button_element and button_element.is_displayed():
                                         success_detected = True
-                                        self.emit_status("🎉 检测到投稿成功：查看稿件按钮 (后备)")
+                                        self.emit_status(f"🎉 检测到投稿成功：查看稿件按钮 (后备)")
                                         break
                             except:
                                 pass
@@ -1635,7 +1782,7 @@ class BilibiliVideoUploader:
                                     buttons = container.find_elements(By.TAG_NAME, "button")
                                     if buttons and any(btn.is_displayed() for btn in buttons):
                                         success_detected = True
-                                        self.emit_status("🎉 检测到投稿成功：操作按钮容器存在")
+                                        self.emit_status(f"🎉 检测到投稿成功：操作按钮容器存在")
                                         break
                         except:
                             pass
@@ -1659,24 +1806,31 @@ class BilibiliVideoUploader:
             
                         # 根据检测结果返回
             if success_detected:
-                self.emit_status("🎉 视频投稿成功！")
+                self.emit_status(f"🎉 视频投稿成功！")
+                
+                # 🎯 更新浏览器状态为成功
+                self.update_browser_identity(driver, account_name, "投稿成功！🎉")
                 
                 # 🎯 关键修复：投稿成功后清除超时检查，避免与成功等待时间冲突
                 self.start_time = None  # 清除超时计时，避免在成功等待期间被误判为超时
                 
                 # 🎯 优化：投稿成功后立即更新数据库和界面，再进行等待
                 callback_executed = False
-                if self.success_callback:
+                
+                # 🔧 并发安全：优先使用参数传递的回调，避免实例变量冲突
+                active_callback = success_callback_override or self.success_callback
+                
+                if active_callback:
                     try:
-                        self.emit_status("📊 投稿成功，立即更新数据库和界面...")
+                        self.emit_status(f"📊 投稿成功，立即更新数据库和界面...")
                         # 调用成功回调：立即更新数据库和界面
-                        callback_success = self.success_callback()
+                        callback_success = active_callback()
                         callback_executed = True
                         if callback_success:
-                            self.emit_status("✅ 数据库和界面更新成功")
+                            self.emit_status(f"✅ 数据库和界面更新成功")
                         else:
-                            self.emit_status("⚠️ 数据库或界面更新失败，但投稿已成功")
-                            self.emit_status("🔍 请检查上方的详细错误日志，可能是数据库连接、权限或数据格式问题")
+                            self.emit_status(f"⚠️ 数据库或界面更新失败，但投稿已成功")
+                            self.emit_status(f"🔍 请检查上方的详细错误日志，可能是数据库连接、权限或数据格式问题")
                     except Exception as e:
                         import traceback
                         error_trace = traceback.format_exc()
@@ -1684,7 +1838,7 @@ class BilibiliVideoUploader:
                         self.emit_status(f"⚠️ 详细错误信息:\n{error_trace}")
                         callback_executed = True  # 标记为已执行，即使失败
                 else:
-                    self.emit_status("⚠️ 没有设置success_callback，无法更新数据库")
+                    self.emit_status(f"⚠️ 没有设置success_callback，无法更新数据库")
                 
                 # 🎯 关键修复：无论回调是否成功，都要执行等待逻辑
                 self.emit_status("🔍 开始获取投稿成功等待时间配置...")
@@ -1737,7 +1891,7 @@ class BilibiliVideoUploader:
                 
                 return True
             else:
-                self.emit_status("❌ 投稿状态检测超时或失败")
+                self.emit_status(f"❌ 投稿状态检测超时或失败")
                 return False
             
         except Exception as e:

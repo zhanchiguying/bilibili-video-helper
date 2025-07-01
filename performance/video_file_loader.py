@@ -624,17 +624,37 @@ class VideoUploadCoordinator:
                 return False, f"视频 {filename} 正在被其他账号处理"
             
             # 🔍 步骤2：在锁保护下再次检查视频状态
+            upload_thread.upload_status.emit(f"🔍 [{account_name}] 锁内检查视频状态: {filename}")
+            
             md5_hash = self.md5_cache.get_file_md5(video_path)
             if not md5_hash:
                 return False, f"无法计算文件MD5: {filename}"
             
-            # 检查是否已上传（在锁保护下）
+            upload_thread.upload_status.emit(f"🔢 [{account_name}] MD5计算完成: {md5_hash[:8]}...")
+            
+            # 🔧 增强检查：多重验证视频是否已上传
             try:
                 from database.database_manager import db_manager
+                
+                # 检查1：基本MD5检查
                 if db_manager.is_video_uploaded(md5_hash):
+                    upload_thread.upload_status.emit(f"⏭️ [{account_name}] 基本检查：视频 {filename} 已被上传，跳过")
                     return False, f"视频 {filename} 已被上传，跳过"
+                
+                # 检查2：验证数据库连接有效性
+                with db_manager.get_connection() as test_conn:
+                    test_cursor = test_conn.cursor()
+                    test_cursor.execute("SELECT COUNT(*) FROM uploaded_videos WHERE md5_hash = ?", (md5_hash,))
+                    count = test_cursor.fetchone()[0]
+                    if count > 0:
+                        upload_thread.upload_status.emit(f"⏭️ [{account_name}] 深度检查：视频 {filename} 已在数据库中，跳过")
+                        return False, f"视频 {filename} 已在数据库中，跳过"
+                
+                upload_thread.upload_status.emit(f"✅ [{account_name}] 检查通过：视频 {filename} 可以上传")
+                
             except Exception as e:
-                return False, f"检查上传状态失败: {e}"
+                upload_thread.upload_status.emit(f"⚠️ [{account_name}] 检查异常: {e}，继续上传")
+                # 检查出错时继续上传，避免误跳过
             
             upload_thread.upload_status.emit(f"🔒 [{account_name}] 获得视频上传锁: {filename}")
             
@@ -699,17 +719,15 @@ class VideoUploadCoordinator:
                 upload_complete_event.set()
         
         try:
-            # 🔧 关键修复：清除任何现有的回调，避免冲突
-            old_callback = getattr(uploader, 'success_callback', None)
-            if old_callback:
-                upload_thread.upload_status.emit(f"🔧 [{account_name}] 发现现有回调，清除以避免重复调用")
+            # 🔧 并发安全修复：使用账号特定的回调属性，避免多账号冲突
+            callback_attr = f"success_callback_{account_name.replace('-', '_')}"
+            upload_thread.upload_status.emit(f"🔧 [{account_name}] 使用账号特定回调属性: {callback_attr}")
             
-            # 🔧 强制清除任何可能的回调
-            uploader.success_callback = None
-            upload_thread.upload_status.emit(f"🔧 [{account_name}] 回调已清除，设置VideoUploadCoordinator专用回调")
+            # 设置账号特定的回调
+            setattr(uploader, callback_attr, sync_success_callback)
             
-            # 设置同步回调
-            uploader.success_callback = sync_success_callback
+            # 🔧 并发安全：不再使用实例变量，而是通过参数传递回调
+            upload_thread.upload_status.emit(f"🔧 [{account_name}] 通过参数传递VideoUploadCoordinator专用回调")
             
             # 1. 上传视频文件
             need_popup_handling = account_name not in getattr(upload_thread, 'account_popup_handled', {})
@@ -738,17 +756,17 @@ class VideoUploadCoordinator:
                 "title_template": "{filename}"
             }
             
-            if not uploader.fill_video_info(browser, filename, upload_settings, product_info):
+            if not uploader.fill_video_info(browser, filename, upload_settings, product_info, account_name):
                 result['error'] = "填写视频信息失败"
                 return result
             
             # 3. 添加商品
-            if not uploader.add_product_to_video(browser, filename, product_info):
+            if not uploader.add_product_to_video(browser, filename, product_info, account_name):
                 result['error'] = "添加商品失败"
                 return result
             
-            # 4. 发布视频并等待完成
-            if not uploader.publish_video(browser, account_name):
+            # 4. 发布视频并等待完成（传递专用回调）
+            if not uploader.publish_video(browser, account_name, sync_success_callback):
                 result['error'] = "发布视频失败"
                 return result
             
@@ -765,23 +783,28 @@ class VideoUploadCoordinator:
             result['error'] = f"上传过程异常: {e}"
             return result
         finally:
-            # 🔧 强化清理回调，确保不影响后续使用
+            # 🔧 清理账号特定的回调属性
             try:
-                uploader.success_callback = None
-                upload_thread.upload_status.emit(f"🔧 [{account_name}] VideoUploadCoordinator回调已清理")
+                if hasattr(uploader, callback_attr):
+                    delattr(uploader, callback_attr)
+                    upload_thread.upload_status.emit(f"🔧 [{account_name}] VideoUploadCoordinator账号特定回调已清理")
             except Exception as e:
                 upload_thread.upload_status.emit(f"⚠️ [{account_name}] 清理回调时异常: {e}")
                 pass
     
     def _atomic_complete_upload(self, video_path: str, account_name: str, 
                               product_id: str, upload_thread) -> bool:
-        """原子性完成上传：更新数据库 + 删除文件"""
+        """原子性完成上传：更新数据库 + 删除文件 + 清理缓存"""
         try:
             # 🎯 步骤1：更新数据库
             success = upload_thread.mark_video_uploaded(video_path, account_name, product_id)
             if not success:
                 upload_thread.upload_status.emit(f"❌ [{account_name}] 数据库更新失败")
                 return False
+            
+            # 🔧 步骤1.5：立即清除MD5缓存，确保其他账号能正确检测到已上传状态
+            self.md5_cache.clear_cache(video_path)
+            upload_thread.upload_status.emit(f"🧹 [{account_name}] 已清除MD5缓存，其他账号将重新检查状态")
             
             # 🎯 步骤2：删除文件
             if upload_thread.delete_video_file(video_path):
